@@ -13,6 +13,7 @@ dist/
 # Environment and credentials
 .env
 .env.*
+!.env.example
 *.env
 credentials.json
 *token.json*

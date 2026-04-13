@@ -133,6 +133,20 @@ async def shutdown():
     logger.info("Finanzas 4.0 API shutdown complete")
 
 
+# =====================
+# HEALTH CHECK
+# =====================
+@app.get("/api/health")
+async def health_check():
+    try:
+        p = await get_pool()
+        async with p.acquire() as conn:
+            await conn.fetchval("SELECT 1")
+        return {"status": "ok", "db": "connected"}
+    except Exception as e:
+        return {"status": "degraded", "db": str(e)}
+
+
 async def seed_data():
     """Create initial seed data"""
     pool = await get_pool()
