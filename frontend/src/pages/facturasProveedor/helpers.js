@@ -30,7 +30,7 @@ export const calcularImporteArticulo = (articulo) => {
 };
 
 export const getEmptyLinea = () => ({
-  categoria_id: '', descripcion: '', linea_negocio_id: '', centro_costo_id: '', unidad_interna_id: '', importe: 0, igv_aplica: true
+  categoria_id: '', descripcion: '', linea_negocio_id: '', centro_costo_id: '', unidad_interna_id: '', importe: 0, igv_aplica: true, movimiento_id: ''
 });
 
 export const getEmptyFormData = (monedaId = '') => ({

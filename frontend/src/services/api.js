@@ -335,5 +335,15 @@ export const calcularDepreciacion = () => api.post('/activos-fijos/calcular-depr
 
 // Movimientos desde Producción
 export const getMovimientosProduccion = (params) => api.get('/movimientos-produccion', { params });
+export const getMovimientosProduccionFinanzas = (params) => api.get('/movimientos-produccion-finanzas', { params });
+
+// Producción backend directo — vincular facturas con movimientos
+const PROD_API_URL = process.env.REACT_APP_PRODUCCION_URL || 'http://localhost:8000';
+
+export const getMovimientosProduccionSinFactura = (params) =>
+  axios.get(`${PROD_API_URL}/api/movimientos-produccion-sin-factura`, { params });
+
+export const vincularFacturaMovimiento = (movimientoId, data) =>
+  axios.patch(`${PROD_API_URL}/api/movimientos-produccion/${movimientoId}/factura`, data);
 
 export default api;

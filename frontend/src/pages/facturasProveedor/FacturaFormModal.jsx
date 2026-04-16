@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { createFacturaProveedor, updateFacturaProveedor, createTercero, getVinculacionesFactura } from '../../services/api';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { createFacturaProveedor, updateFacturaProveedor, createTercero, getVinculacionesFactura, getMovimientosProduccionSinFactura, vincularFacturaMovimiento } from '../../services/api';
 import { formatCurrency, calcularTotales, calcularImporteArticulo, getEmptyLinea, getEmptyFormData } from './helpers';
-import { Plus, Trash2, X, FileText, ChevronDown, ChevronUp, Copy, DollarSign, Download, Link2, History, FileSpreadsheet, Package } from 'lucide-react';
+import { Plus, Trash2, X, FileText, ChevronDown, ChevronUp, Copy, DollarSign, Download, Link2, History, FileSpreadsheet, Package, Factory, Loader2 } from 'lucide-react';
 import { toast } from 'sonner';
 import SearchableSelect from '../../components/SearchableSelect';
 import TableSearchSelect from '../../components/TableSearchSelect';
@@ -19,6 +19,8 @@ const FacturaFormModal = ({
   const [showDetallesArticulo, setShowDetallesArticulo] = useState(true);
   const [showVinculados, setShowVinculados] = useState(false);
   const [vinculados, setVinculados] = useState([]);
+  const [movimientosProduccion, setMovimientosProduccion] = useState([]);
+  const [loadingMovimientos, setLoadingMovimientos] = useState(false);
 
   // Initialize form when modal opens
   useEffect(() => {
@@ -71,7 +73,7 @@ const FacturaFormModal = ({
       lineas: (() => {
         const catLines = (factura.lineas || []).filter(l => !l.articulo_id && !l.servicio_id);
         return catLines.length > 0
-          ? catLines.map(l => ({ id: l.id, categoria_id: l.categoria_id || '', descripcion: l.descripcion || '', linea_negocio_id: l.linea_negocio_id || '', centro_costo_id: l.centro_costo_id || '', unidad_interna_id: l.unidad_interna_id || '', importe: l.importe || 0, igv_aplica: l.igv_aplica !== false }))
+          ? catLines.map(l => ({ id: l.id, categoria_id: l.categoria_id || '', descripcion: l.descripcion || '', linea_negocio_id: l.linea_negocio_id || '', centro_costo_id: l.centro_costo_id || '', unidad_interna_id: l.unidad_interna_id || '', importe: l.importe || 0, igv_aplica: l.igv_aplica !== false, movimiento_id: '' }))
           : [getEmptyLinea()];
       })(),
       articulos: (() => {
@@ -93,11 +95,62 @@ const FacturaFormModal = ({
     });
   };
 
+  // Helper: detect if category belongs to SERVICIOS DE PRODUCCIÓN
+  const esServicioProduccion = useCallback((categoriaId) => {
+    if (!categoriaId) return false;
+    const cat = categorias.find(c => String(c.id) === String(categoriaId));
+    return (
+      cat?.nombre_completo?.startsWith('SERVICIOS DE PRODUCCIÓN >') ||
+      cat?.nombre === 'SERVICIOS DE PRODUCCIÓN'
+    );
+  }, [categorias]);
+
+  // Fetch movimientos without factura from produccion backend
+  const fetchMovimientosProduccion = useCallback(async (proveedorId) => {
+    setLoadingMovimientos(true);
+    try {
+      const pid = proveedorId ?? formData.proveedor_id;
+      const proveedor = proveedores.find(p => String(p.id) === String(pid));
+      const params = {};
+      if (proveedor?.nombre) params.persona_nombre = proveedor.nombre;
+      const res = await getMovimientosProduccionSinFactura(params);
+      setMovimientosProduccion(res.data || []);
+    } catch {
+      setMovimientosProduccion([]);
+    }
+    setLoadingMovimientos(false);
+  }, [formData.proveedor_id, proveedores]);
+
   // Line handlers
   const handleAddLinea = () => setFormData(prev => ({ ...prev, lineas: [...prev.lineas, getEmptyLinea()] }));
   const handleRemoveLinea = (index) => { if (formData.lineas.length > 1) setFormData(prev => ({ ...prev, lineas: prev.lineas.filter((_, i) => i !== index) })); };
   const handleDuplicateLinea = (index) => setFormData(prev => ({ ...prev, lineas: [...prev.lineas.slice(0, index + 1), { ...prev.lineas[index] }, ...prev.lineas.slice(index + 1)] }));
-  const handleLineaChange = (index, field, value) => setFormData(prev => ({ ...prev, lineas: prev.lineas.map((linea, i) => i === index ? { ...linea, [field]: value } : linea) }));
+  const handleLineaChange = (index, field, value) => {
+    setFormData(prev => ({
+      ...prev,
+      lineas: prev.lineas.map((linea, i) => {
+        if (i !== index) return linea;
+        const updated = { ...linea, [field]: value };
+        // Auto-fill importe when movimiento is selected
+        if (field === 'movimiento_id' && value) {
+          const mov = movimientosProduccion.find(m => m.id === value);
+          if (mov) {
+            updated.importe = parseFloat(mov.costo_calculado) || 0;
+            if (!updated.descripcion) updated.descripcion = mov.servicio_nombre || '';
+          }
+        }
+        // Clear movimiento when category changes away from servicios produccion
+        if (field === 'categoria_id' && !esServicioProduccion(value)) {
+          updated.movimiento_id = '';
+        }
+        return updated;
+      })
+    }));
+    // Trigger movimientos fetch when a servicios-produccion category is selected
+    if (field === 'categoria_id' && esServicioProduccion(value) && movimientosProduccion.length === 0) {
+      fetchMovimientosProduccion();
+    }
+  };
 
   // Article handlers
   const handleAddArticulo = () => setFormData(prev => ({ ...prev, articulos: [...prev.articulos, { tipo_linea: 'inventariable', articulo_id: '', servicio_id: '', servicio_detalle: '', modelo_corte_id: '', unidad: '', cantidad: 1, precio: 0, linea_negocio_id: '', igv_aplica: true }] }));
@@ -175,14 +228,18 @@ const FacturaFormModal = ({
         fecha_contable: formData.fecha_contable || formData.fecha_factura || null,
         fecha_vencimiento: formData.fecha_vencimiento || null,
         lineas: [
-          ...formData.lineas.map(l => ({
-            ...l,
-            categoria_id: l.categoria_id ? parseInt(l.categoria_id) : null,
-            linea_negocio_id: l.linea_negocio_id ? parseInt(l.linea_negocio_id) : null,
-            centro_costo_id: l.centro_costo_id ? parseInt(l.centro_costo_id) : null,
-            unidad_interna_id: l.unidad_interna_id ? parseInt(l.unidad_interna_id) : null,
-            importe: parseFloat(l.importe) || 0
-          })),
+          ...formData.lineas.map(l => {
+            // eslint-disable-next-line no-unused-vars
+            const { movimiento_id, ...rest } = l;
+            return {
+              ...rest,
+              categoria_id: l.categoria_id ? parseInt(l.categoria_id) : null,
+              linea_negocio_id: l.linea_negocio_id ? parseInt(l.linea_negocio_id) : null,
+              centro_costo_id: l.centro_costo_id ? parseInt(l.centro_costo_id) : null,
+              unidad_interna_id: l.unidad_interna_id ? parseInt(l.unidad_interna_id) : null,
+              importe: parseFloat(l.importe) || 0
+            };
+          }),
           ...formData.articulos.map(art => {
             const isServicio = art.tipo_linea === 'servicio';
             const selectedArticulo = !isServicio ? inventario.find(inv => inv.id === art.articulo_id) : null;
@@ -210,6 +267,11 @@ const FacturaFormModal = ({
       if (!dataToSend.fecha_factura) { toast.error('La fecha de factura es requerida'); return; }
 
       setSubmitting(true);
+      // Collect lineas with movimiento before saving
+      const lineasConMovimiento = formData.lineas.filter(l => l.movimiento_id);
+      let savedFacturaNro = null;
+      let savedFacturaId = null;
+
       if (editingFactura) {
         const isLockedState = editingFactura.estado === 'pagado' || editingFactura.estado === 'canjeado';
         if (isLockedState) {
@@ -228,14 +290,35 @@ const FacturaFormModal = ({
           };
           await updateFacturaProveedor(editingFactura.id, classificationData);
           toast.success('Clasificacion actualizada exitosamente');
+          savedFacturaNro = editingFactura.numero;
+          savedFacturaId = String(editingFactura.id);
         } else {
           await updateFacturaProveedor(editingFactura.id, dataToSend);
           toast.success('Factura actualizada exitosamente');
+          savedFacturaNro = editingFactura.numero;
+          savedFacturaId = String(editingFactura.id);
         }
       } else {
-        await createFacturaProveedor(dataToSend);
+        const savedRes = await createFacturaProveedor(dataToSend);
         toast.success('Factura creada exitosamente');
+        savedFacturaNro = savedRes?.data?.numero;
+        savedFacturaId = String(savedRes?.data?.id || '');
       }
+
+      // Vincular movimientos de producción con la factura guardada
+      if (savedFacturaNro && lineasConMovimiento.length > 0) {
+        for (const linea of lineasConMovimiento) {
+          try {
+            await vincularFacturaMovimiento(linea.movimiento_id, {
+              factura_numero: savedFacturaNro,
+              factura_id: savedFacturaId,
+            });
+          } catch (e) {
+            console.error('Error vinculando movimiento a factura:', e);
+          }
+        }
+      }
+
       if (createNew) { resetForm(); } else { onClose(); }
       onSaved();
     } catch (error) {
@@ -503,40 +586,90 @@ const FacturaFormModal = ({
                   </thead>
                   <tbody>
                     {formData.lineas.map((linea, index) => (
-                      <tr key={index}>
-                        <td className="row-number">{index + 1}</td>
-                        <td>
-                          <CategoriaSelect categorias={categorias} value={linea.categoria_id} onChange={(value) => handleLineaChange(index, 'categoria_id', value)} placeholder="Categoria" />
-                        </td>
-                        <td>
-                          <input type="text" placeholder="Descripcion" value={linea.descripcion} onChange={(e) => handleLineaChange(index, 'descripcion', e.target.value)} />
-                        </td>
-                        <td>
-                          <TableSearchSelect options={lineasNegocio} value={linea.linea_negocio_id} onChange={(value) => handleLineaChange(index, 'linea_negocio_id', value)} placeholder="Linea" displayKey="nombre" valueKey="id" />
-                        </td>
-                        <td>
-                          <select value={linea.unidad_interna_id || ''} onChange={(e) => handleLineaChange(index, 'unidad_interna_id', e.target.value)}>
-                            <option value="">Sin asignar</option>
-                            {unidadesInternas.map(ui => (
-                              <option key={ui.id} value={ui.id}>{ui.nombre}</option>
-                            ))}
-                          </select>
-                        </td>
-                        <td>
-                          <input type="number" step="0.01" placeholder="0.00" value={linea.importe} onChange={(e) => handleLineaChange(index, 'importe', e.target.value)} style={{ textAlign: 'right', ...(isLocked ? lockedStyle : {}) }} data-testid={`linea-importe-${index}`} disabled={isLocked} />
-                        </td>
-                        <td style={{ textAlign: 'center' }}>
-                          <input type="checkbox" checked={linea.igv_aplica} onChange={(e) => handleLineaChange(index, 'igv_aplica', e.target.checked)} style={{ width: '18px', height: '18px', accentColor: 'var(--primary)' }} disabled={isLocked} />
-                        </td>
-                        <td className="actions-cell">
-                          {!isLocked && (
-                            <>
-                              <button type="button" className="btn-icon-small" onClick={() => handleDuplicateLinea(index)} title="Duplicar"><Copy size={14} /></button>
-                              <button type="button" className="btn-icon-small" onClick={() => handleRemoveLinea(index)} title="Eliminar" disabled={formData.lineas.length === 1}><Trash2 size={14} /></button>
-                            </>
-                          )}
-                        </td>
-                      </tr>
+                      <React.Fragment key={index}>
+                        <tr>
+                          <td className="row-number">{index + 1}</td>
+                          <td>
+                            <CategoriaSelect categorias={categorias} value={linea.categoria_id} onChange={(value) => handleLineaChange(index, 'categoria_id', value)} placeholder="Categoria" />
+                          </td>
+                          <td>
+                            <input type="text" placeholder="Descripcion" value={linea.descripcion} onChange={(e) => handleLineaChange(index, 'descripcion', e.target.value)} />
+                          </td>
+                          <td>
+                            <TableSearchSelect options={lineasNegocio} value={linea.linea_negocio_id} onChange={(value) => handleLineaChange(index, 'linea_negocio_id', value)} placeholder="Linea" displayKey="nombre" valueKey="id" />
+                          </td>
+                          <td>
+                            <select value={linea.unidad_interna_id || ''} onChange={(e) => handleLineaChange(index, 'unidad_interna_id', e.target.value)}>
+                              <option value="">Sin asignar</option>
+                              {unidadesInternas.map(ui => (
+                                <option key={ui.id} value={ui.id}>{ui.nombre}</option>
+                              ))}
+                            </select>
+                          </td>
+                          <td>
+                            <input type="number" step="0.01" placeholder="0.00" value={linea.importe} onChange={(e) => handleLineaChange(index, 'importe', e.target.value)} style={{ textAlign: 'right', ...(isLocked ? lockedStyle : {}) }} data-testid={`linea-importe-${index}`} disabled={isLocked} />
+                          </td>
+                          <td style={{ textAlign: 'center' }}>
+                            <input type="checkbox" checked={linea.igv_aplica} onChange={(e) => handleLineaChange(index, 'igv_aplica', e.target.checked)} style={{ width: '18px', height: '18px', accentColor: 'var(--primary)' }} disabled={isLocked} />
+                          </td>
+                          <td className="actions-cell">
+                            {!isLocked && (
+                              <>
+                                <button type="button" className="btn-icon-small" onClick={() => handleDuplicateLinea(index)} title="Duplicar"><Copy size={14} /></button>
+                                <button type="button" className="btn-icon-small" onClick={() => handleRemoveLinea(index)} title="Eliminar" disabled={formData.lineas.length === 1}><Trash2 size={14} /></button>
+                              </>
+                            )}
+                          </td>
+                        </tr>
+                        {/* Sub-fila: Movimiento de Producción (solo para SERVICIOS DE PRODUCCIÓN) */}
+                        {esServicioProduccion(linea.categoria_id) && (
+                          <tr style={{ background: '#fffbeb' }}>
+                            <td />
+                            <td colSpan="7" style={{ paddingBottom: '0.5rem', paddingTop: '0.25rem' }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                                <Factory size={13} style={{ color: '#d97706', flexShrink: 0 }} />
+                                <span style={{ fontSize: '0.7rem', fontWeight: 600, color: '#d97706', whiteSpace: 'nowrap' }}>Movimiento de Producción</span>
+                                {loadingMovimientos
+                                  ? <Loader2 size={12} style={{ animation: 'spin 1s linear infinite' }} />
+                                  : (
+                                    <select
+                                      value={linea.movimiento_id || ''}
+                                      onChange={e => handleLineaChange(index, 'movimiento_id', e.target.value)}
+                                      disabled={isLocked}
+                                      style={{
+                                        flex: 1, fontSize: '0.75rem', padding: '0.25rem 0.5rem',
+                                        border: '1px solid #fbbf24', borderRadius: '4px',
+                                        background: linea.movimiento_id ? '#d1fae5' : 'white',
+                                        color: linea.movimiento_id ? '#065f46' : 'inherit',
+                                        minWidth: 0,
+                                      }}
+                                    >
+                                      <option value="">— Sin vincular —</option>
+                                      {movimientosProduccion.map(m => (
+                                        <option key={m.id} value={m.id}>{m.label}</option>
+                                      ))}
+                                    </select>
+                                  )
+                                }
+                                {movimientosProduccion.length === 0 && !loadingMovimientos && (
+                                  <button
+                                    type="button"
+                                    style={{ fontSize: '0.7rem', color: '#d97706', background: 'none', border: 'none', cursor: 'pointer', textDecoration: 'underline' }}
+                                    onClick={() => fetchMovimientosProduccion()}
+                                  >
+                                    Cargar
+                                  </button>
+                                )}
+                                {linea.movimiento_id && (
+                                  <span style={{ fontSize: '0.65rem', padding: '1px 6px', borderRadius: '999px', background: '#d1fae5', color: '#065f46', fontWeight: 600 }}>
+                                    ✓ Vinculado
+                                  </span>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                      </React.Fragment>
                     ))}
                   </tbody>
                 </table>

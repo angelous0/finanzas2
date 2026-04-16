@@ -124,6 +124,7 @@ async def startup():
     await init_db()
     await seed_data()
     await sync_correlativos()
+    await seed_servicios_produccion_categoria()
     logger.info("Finanzas 4.0 API started successfully")
 
 
@@ -195,6 +196,36 @@ async def seed_data():
             VALUES ($1, 'RUC', '20987654321', 'Proveedor Demo S.A.C.', TRUE, 30)
         """, empresa_id)
         logger.info("Seed data created successfully")
+
+
+async def seed_servicios_produccion_categoria():
+    """Inserta la categoría 'SERVICIOS DE PRODUCCIÓN' y sus hijos para cada empresa (idempotente)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        empresas = await conn.fetch("SELECT id FROM finanzas2.cont_empresa")
+        for empresa_row in empresas:
+            empresa_id = empresa_row["id"]
+            existing = await conn.fetchval(
+                "SELECT id FROM finanzas2.cont_categoria WHERE empresa_id=$1 AND nombre=$2 AND padre_id IS NULL",
+                empresa_id, "SERVICIOS DE PRODUCCIÓN",
+            )
+            if existing:
+                continue
+            parent_id = await conn.fetchval("""
+                INSERT INTO finanzas2.cont_categoria (empresa_id, codigo, nombre, tipo, activo)
+                VALUES ($1, 'EGR-PROD', 'SERVICIOS DE PRODUCCIÓN', 'egreso', TRUE)
+                RETURNING id
+            """, empresa_id)
+            await conn.execute("""
+                INSERT INTO finanzas2.cont_categoria
+                    (empresa_id, codigo, nombre, tipo, padre_id, descripcion, activo)
+                VALUES
+                    ($1, 'EGR-PROD-001', 'Servicio externo producción', 'egreso', $2,
+                     'Costura, lavandería, estampado, etc.', TRUE),
+                    ($1, 'EGR-PROD-002', 'Compra de Materia Prima', 'egreso', $2,
+                     'Telas, avíos, hilos', TRUE)
+            """, empresa_id, parent_id)
+            logger.info(f"Seeded SERVICIOS DE PRODUCCIÓN category for empresa {empresa_id}")
 
 
 async def sync_correlativos():

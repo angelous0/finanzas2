@@ -172,3 +172,70 @@ async def get_movimientos_produccion(
         resumen["monto_entregas_pt"] = round(resumen["monto_entregas_pt"], 2)
 
         return {"items": items, "resumen": resumen, "total": len(items)}
+
+
+@router.get("/movimientos-produccion-finanzas")
+async def get_movimientos_produccion_finanzas(
+    empresa_id: int = Depends(get_empresa_id),
+    fecha_desde: Optional[str] = Query(None),
+    fecha_hasta: Optional[str] = Query(None),
+    persona_nombre: Optional[str] = Query(None),
+):
+    """
+    Movimientos individuales de prod_movimientos_produccion con estado de facturación.
+    Usado en Finanzas → pestaña Servicios de Movimientos de Producción.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        date_filter = ""
+        params = [empresa_id]
+        idx = 2
+
+        if fecha_desde:
+            date_filter += f" AND mp.fecha_inicio >= ${idx}::date"
+            params.append(fecha_desde); idx += 1
+        if fecha_hasta:
+            date_filter += f" AND mp.fecha_inicio <= ${idx}::date"
+            params.append(fecha_hasta); idx += 1
+        if persona_nombre:
+            date_filter += f" AND p.nombre ILIKE ${idx}"
+            params.append(f"%{persona_nombre}%"); idx += 1
+
+        rows = await conn.fetch(f"""
+            SELECT
+                mp.id,
+                mp.costo_calculado,
+                mp.cantidad_recibida,
+                mp.fecha_inicio,
+                mp.factura_numero,
+                mp.factura_id,
+                s.nombre  AS servicio_nombre,
+                p.nombre  AS persona_nombre,
+                r.n_corte AS registro_n_corte
+            FROM produccion.prod_movimientos_produccion mp
+            LEFT JOIN produccion.prod_servicios_produccion s ON mp.servicio_id = s.id
+            LEFT JOIN produccion.prod_personas_produccion  p ON mp.persona_id  = p.id
+            LEFT JOIN produccion.prod_registros            r ON mp.registro_id = r.id
+            WHERE mp.empresa_id = $1
+              AND COALESCE(mp.costo_calculado, 0) > 0
+              {date_filter}
+            ORDER BY mp.fecha_inicio DESC NULLS LAST
+            LIMIT 500
+        """, *params)
+
+        items = []
+        for r in rows:
+            d = dict(r)
+            if d.get("fecha_inicio"):
+                d["fecha_inicio"] = str(d["fecha_inicio"])
+            d["facturado"] = bool(d.get("factura_numero"))
+            d["tipo"] = "movimiento"
+            d["tipo_label"] = d.get("servicio_nombre") or "Servicio"
+            d["descripcion"] = f"Corte {d.get('registro_n_corte') or '?'} — {d.get('servicio_nombre') or 'Servicio'}"
+            d["detalle"] = d.get("persona_nombre") or ""
+            d["monto"] = float(d.get("costo_calculado") or 0)
+            d["cantidad"] = float(d.get("cantidad_recibida") or 0)
+            d["fecha"] = d.get("fecha_inicio")
+            items.append(d)
+
+        return {"items": items, "total": len(items)}
