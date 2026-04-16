@@ -215,8 +215,8 @@ async def get_movimientos_produccion_finanzas(
             FROM produccion.prod_movimientos_produccion mp
             LEFT JOIN produccion.prod_servicios_produccion s ON mp.servicio_id = s.id
             LEFT JOIN produccion.prod_personas_produccion  p ON mp.persona_id  = p.id
-            LEFT JOIN produccion.prod_registros            r ON mp.registro_id = r.id
-            WHERE mp.empresa_id = $1
+            INNER JOIN produccion.prod_registros           r ON mp.registro_id = r.id
+            WHERE r.empresa_id = $1
               AND COALESCE(mp.costo_calculado, 0) > 0
               {date_filter}
             ORDER BY mp.fecha_inicio DESC NULLS LAST
