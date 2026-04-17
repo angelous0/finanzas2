@@ -24,53 +24,58 @@ async def get_movimientos_produccion(
         resumen = {"total_servicios": 0, "total_ingresos_mp": 0, "total_entregas_pt": 0,
                    "monto_servicios": 0, "monto_ingresos_mp": 0, "monto_entregas_pt": 0}
 
-        # 1. Servicios externos → egresos
+        # 1. Servicios externos → egresos (from prod_movimientos_produccion)
         if not tipo or tipo == "servicio":
             date_filter = ""
             params = [empresa_id]
             idx = 2
             if fecha_desde:
-                date_filter += f" AND s.fecha_inicio >= ${idx}::date"
+                date_filter += f" AND mp.fecha_inicio >= ${idx}::date"
                 params.append(fecha_desde); idx += 1
             if fecha_hasta:
-                date_filter += f" AND s.fecha_inicio <= ${idx}::date"
+                date_filter += f" AND mp.fecha_inicio <= ${idx}::date"
                 params.append(fecha_hasta); idx += 1
 
             rows = await conn.fetch(f"""
                 SELECT
-                    s.id, s.orden_id, s.proveedor_texto,
-                    s.descripcion, s.cantidad_enviada, s.cantidad_recibida,
-                    s.tarifa_unitaria, s.costo_total, s.estado,
-                    s.fecha_inicio, s.fecha_fin,
+                    mp.id,
+                    mp.cantidad_enviada, mp.cantidad_recibida,
+                    mp.tarifa_aplicada as tarifa_unitaria,
+                    mp.costo_calculado as costo_total,
+                    mp.fecha_inicio, mp.fecha_fin,
                     sv.nombre as servicio_nombre,
                     p.nombre as persona_nombre,
-                    r.n_corte
-                FROM produccion.prod_servicio_orden s
-                LEFT JOIN produccion.prod_servicios_produccion sv ON s.servicio_id = sv.id
-                LEFT JOIN produccion.prod_personas_produccion p ON s.persona_id = p.id
-                LEFT JOIN produccion.prod_registros r ON s.orden_id = r.id
-                WHERE s.empresa_id = $1
-                  AND COALESCE(s.costo_total, 0) > 0
+                    r.n_corte,
+                    mp.factura_numero,
+                    mp.factura_id
+                FROM produccion.prod_movimientos_produccion mp
+                INNER JOIN produccion.prod_registros r ON mp.registro_id = r.id
+                LEFT JOIN produccion.prod_servicios_produccion sv ON mp.servicio_id = sv.id
+                LEFT JOIN produccion.prod_personas_produccion p ON mp.persona_id = p.id
+                WHERE r.empresa_id = $1
+                  AND COALESCE(mp.costo_calculado, 0) > 0
                   {date_filter}
-                ORDER BY s.fecha_inicio DESC NULLS LAST
+                ORDER BY mp.fecha_inicio DESC NULLS LAST
                 LIMIT 500
             """, *params)
 
             for r in rows:
+                costo = float(r["costo_total"] or 0)
                 items.append({
                     "tipo": "servicio",
                     "tipo_label": "Servicio Externo",
                     "impacto": "egreso",
                     "fecha": str(r["fecha_inicio"]) if r["fecha_inicio"] else None,
-                    "descripcion": f"Corte {r['n_corte'] or '?'} — {r['servicio_nombre'] or r['descripcion'] or 'Servicio'}",
-                    "detalle": r["proveedor_texto"] or r["persona_nombre"] or "",
-                    "cantidad": float(r["cantidad_enviada"] or 0),
-                    "monto": float(r["costo_total"] or 0),
-                    "estado": r["estado"],
+                    "descripcion": f"Corte {r['n_corte'] or '?'} — {r['servicio_nombre'] or 'Servicio'}",
+                    "detalle": r["persona_nombre"] or "",
+                    "cantidad": float(r["cantidad_recibida"] or r["cantidad_enviada"] or 0),
+                    "monto": costo,
+                    "estado": "FACTURADO" if r["factura_numero"] else "SIN FACTURA",
+                    "factura_numero": r["factura_numero"],
                     "referencia_id": str(r["id"]),
                 })
                 resumen["total_servicios"] += 1
-                resumen["monto_servicios"] += float(r["costo_total"] or 0)
+                resumen["monto_servicios"] += costo
 
         # 2. Ingresos de MP → costo
         if not tipo or tipo == "ingreso_mp":

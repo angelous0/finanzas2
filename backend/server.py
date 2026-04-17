@@ -125,6 +125,7 @@ async def startup():
     await seed_data()
     await sync_correlativos()
     await seed_servicios_produccion_categoria()
+    await migrate_factura_numeros()
     logger.info("Finanzas 4.0 API started successfully")
 
 
@@ -226,6 +227,37 @@ async def seed_servicios_produccion_categoria():
                      'Telas, avíos, hilos', TRUE)
             """, empresa_id, parent_id)
             logger.info(f"Seeded SERVICIOS DE PRODUCCIÓN category for empresa {empresa_id}")
+
+
+async def migrate_factura_numeros():
+    """Normalize FC-NNN (3 digits) → FC-NNNN (4 digits) for existing records.
+    Skips any record where the normalized number already exists (avoids UniqueViolation)."""
+    import re
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT id, empresa_id, numero
+            FROM finanzas2.cont_factura_proveedor
+            WHERE numero ~ '^FC-[0-9]{1,3}$'
+        """)
+        updated = 0
+        for row in rows:
+            m = re.match(r'^FC-(\d+)$', row['numero'])
+            if not m:
+                continue
+            normalized = f"FC-{int(m.group(1)):04d}"
+            if normalized == row['numero']:
+                continue
+            exists = await conn.fetchval(
+                "SELECT 1 FROM finanzas2.cont_factura_proveedor WHERE numero = $1 AND empresa_id = $2",
+                normalized, row['empresa_id'])
+            if not exists:
+                await conn.execute(
+                    "UPDATE finanzas2.cont_factura_proveedor SET numero = $1 WHERE id = $2",
+                    normalized, row['id'])
+                updated += 1
+        if updated:
+            logger.info(f"Migrated {updated} factura number(s) to 4-digit FC format")
 
 
 async def sync_correlativos():

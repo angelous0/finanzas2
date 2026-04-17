@@ -6,10 +6,22 @@ from models import OC, OCCreate, OCUpdate, FacturaProveedor, FacturaProveedorCre
 from dependencies import get_empresa_id, get_next_correlativo, safe_date_param
 from services.distribucion_service import recalcular_distribuciones_factura
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def normalize_factura_numero(numero: str) -> str:
+    """Normalize FC-NNN (any digit count) to FC-NNNN (4 digits)."""
+    if not numero:
+        return numero
+    m = re.match(r'^(FC-)(\d+)$', numero.strip().upper())
+    if m:
+        prefix, digits = m.groups()
+        return f"{prefix}{int(digits):04d}"
+    return numero
 
 
 @router.get("/servicios-produccion")
@@ -415,13 +427,13 @@ async def create_factura_proveedor(data: FacturaProveedorCreate, empresa_id: int
     async with pool.acquire() as conn:
         await conn.execute("SET search_path TO finanzas2, public")
         async with conn.transaction():
-            numero = data.numero or await generate_factura_number(conn, empresa_id)
+            numero = normalize_factura_numero(data.numero) if data.numero else await generate_factura_number(conn, empresa_id)
             if data.numero:
                 exists = await conn.fetchval(
                     "SELECT 1 FROM finanzas2.cont_factura_proveedor WHERE numero = $1 AND empresa_id = $2",
-                    data.numero, empresa_id)
+                    numero, empresa_id)
                 if exists:
-                    raise HTTPException(400, f"Ya existe una factura con el número '{data.numero}'")
+                    raise HTTPException(400, f"Ya existe una factura con el número '{numero}'")
 
             subtotal = sum(l.importe for l in data.lineas)
             if data.impuestos_incluidos:

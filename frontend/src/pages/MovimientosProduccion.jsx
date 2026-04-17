@@ -100,8 +100,11 @@ export default function MovimientosProduccion() {
   const [loading, setLoading] = useState(true);
   const [filtroTipo, setFiltroTipo] = useState('');
   const [busqueda, setBusqueda] = useState('');
-  const [fechaDesde, setFechaDesde] = useState('');
-  const [fechaHasta, setFechaHasta] = useState('');
+  const [fechaDesde, setFechaDesde] = useState(() => {
+    const d = new Date(); d.setMonth(d.getMonth() - 3);
+    return d.toISOString().split('T')[0];
+  });
+  const [fechaHasta, setFechaHasta] = useState(() => new Date().toISOString().split('T')[0]);
   const [itemDetalle, setItemDetalle] = useState(null);
 
   const fetchData = async () => {

@@ -34,7 +34,7 @@ export default function Dashboard() {
     }
   };
 
-  useEffect(() => { if (empresaActual) load(); }, [empresaActual]);
+  useEffect(() => { if (empresaActual?.id) load(); }, [empresaActual?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) {
     return (
@@ -120,6 +120,7 @@ export default function Dashboard() {
           iconBg="bg-emerald-500/10"
           iconColor="text-emerald-600"
           testId="kpi-ingresos"
+          note={data.ingresos_mes === 0 ? 'Sin ventas registradas en el período' : null}
         />
         <KpiCard
           label="Costos Proveedores"
@@ -268,7 +269,7 @@ export default function Dashboard() {
   );
 }
 
-function KpiCard({ label, value, icon: Icon, iconBg, iconColor, badge, testId }) {
+function KpiCard({ label, value, icon: Icon, iconBg, iconColor, badge, note, testId }) {
   return (
     <div className="rounded-xl border border-border bg-card p-5 shadow-sm" data-testid={testId}>
       <div className="flex items-start justify-between">
@@ -280,6 +281,9 @@ function KpiCard({ label, value, icon: Icon, iconBg, iconColor, badge, testId })
           <Icon size={20} className={iconColor} />
         </div>
       </div>
+      {note && (
+        <p className="mt-2 text-xs text-muted-foreground/70 italic">{note}</p>
+      )}
       {badge && (
         <div className="mt-3">
           <span className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium ${

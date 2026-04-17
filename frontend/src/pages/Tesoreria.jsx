@@ -12,6 +12,12 @@ const ORIGEN_LABELS = {
   manual: 'Manual',
 };
 
+const TIPO_CUENTA_LABELS = {
+  UNIDAD_INTERNA: 'Cuenta Interna',
+  BANCO: 'Banco',
+  CAJA: 'Caja',
+};
+
 const formatCurrency = (val) => {
   const n = Number(val) || 0;
   return `S/ ${n.toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -95,7 +101,7 @@ export default function Tesoreria() {
           {resumen.cuentas.map(c => (
             <div key={c.id} className="card p-3 flex items-center justify-between">
               <div>
-                <div className="text-xs text-gray-500 uppercase">{c.tipo}</div>
+                <div className="text-xs text-gray-500 uppercase">{TIPO_CUENTA_LABELS[c.tipo] || c.tipo}</div>
                 <div className="font-medium text-sm">{c.nombre}</div>
               </div>
               <div className="font-bold text-sm">{formatCurrency(c.saldo)}</div>

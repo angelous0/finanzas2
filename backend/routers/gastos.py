@@ -236,8 +236,9 @@ async def create_gasto(data: GastoCreate, empresa_id: int = Depends(get_empresa_
                     centro_costo_id=centro_costo_id_mov,
                     proyecto_id=getattr(data, 'proyecto_id', None),
                 )
-            else:
-                # CAPA OBLIGACION: Gasto sin pago -> auto-crear CxP
+            elif data.proveedor_id:
+                # CAPA OBLIGACION: Gasto sin pago con proveedor -> auto-crear CxP
+                # Solo se crea CxP si hay proveedor_id; gastos directos sin proveedor no generan CxP
                 await conn.execute("""
                     INSERT INTO finanzas2.cont_cxp
                     (empresa_id, monto_original, saldo_pendiente, fecha_vencimiento,
