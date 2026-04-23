@@ -68,7 +68,9 @@ def _calcular_derivados(row: dict, ajustes: dict, afp: Optional[dict]) -> dict:
         aporte_afp = base_afp * aporte_pct
         prima_seguros = base_afp * prima_pct
 
-    # Todos los cálculos de planilla redondeados a 2 decimales
+    # Cálculos SIN redondeo intermedio — el round solo se aplica al devolver
+    # al cliente para visualización (2 decimales). Los valores reales tienen
+    # precisión completa de float hasta este punto.
     return {
         "hora_simple":          round(hora_simple, 2),
         "hora_extra_25":        round(hora_extra_25, 2),

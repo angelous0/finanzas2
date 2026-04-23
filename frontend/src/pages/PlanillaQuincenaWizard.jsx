@@ -17,7 +17,10 @@ const fmt = (v) => `S/ ${Number(v || 0).toLocaleString('es-PE', { minimumFractio
 const fmtDate = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('es-PE') : '';
 const MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
 
-// Recalcula el neto de una línea en cliente (mismo algoritmo del backend)
+// Recalcula el neto de una línea en cliente.
+// IMPORTANTE: NO redondeamos en los pasos intermedios. Solo redondeamos
+// al final (subtotales y neto) a 2 decimales para persistencia.
+// La UI muestra con `fmt` (2 decimales) pero el valor guardado es preciso.
 function recalcularLinea(linea) {
   const hn = parseFloat(linea.horas_normales) || 0;
   const h25 = parseFloat(linea.horas_extra_25) || 0;
@@ -25,16 +28,25 @@ function recalcularLinea(linea) {
   const tardanzas = parseFloat(linea.descuento_tardanzas) || 0;
   const adelantos = parseFloat(linea.monto_adelantos) || 0;
 
-  const monto_hn = +(hn * (linea.hora_simple || 0)).toFixed(2);
-  const monto_h25 = +(h25 * (linea.hora_extra_25 || 0)).toFixed(2);
-  const monto_h35 = +(h35 * (linea.hora_extra_35 || 0)).toFixed(2);
-  const subtotal_horas = +(monto_hn + monto_h25 + monto_h35).toFixed(2);
+  // Multiplicación con precisión completa (las tarifas vienen con 4 decimales del backend)
+  const monto_hn_raw = hn * (parseFloat(linea.hora_simple) || 0);
+  const monto_h25_raw = h25 * (parseFloat(linea.hora_extra_25) || 0);
+  const monto_h35_raw = h35 * (parseFloat(linea.hora_extra_35) || 0);
+  const subtotal_horas_raw = monto_hn_raw + monto_h25_raw + monto_h35_raw;
 
-  const asig = +(linea.asig_familiar_monto || 0);
-  const afp = +(linea.afp_total || 0);
-  const neto = +(subtotal_horas + asig - afp - tardanzas - adelantos).toFixed(2);
+  const asig = parseFloat(linea.asig_familiar_monto) || 0;
+  const afp = parseFloat(linea.afp_total) || 0;
+  const neto_raw = subtotal_horas_raw + asig - afp - tardanzas - adelantos;
 
-  return { ...linea, monto_horas_normales: monto_hn, monto_horas_25: monto_h25, monto_horas_35: monto_h35, subtotal_horas, neto };
+  // Redondeo SOLO al final para persistencia en BD
+  return {
+    ...linea,
+    monto_horas_normales: +monto_hn_raw.toFixed(2),
+    monto_horas_25: +monto_h25_raw.toFixed(2),
+    monto_horas_35: +monto_h35_raw.toFixed(2),
+    subtotal_horas: +subtotal_horas_raw.toFixed(2),
+    neto: +neto_raw.toFixed(2),
+  };
 }
 
 export default function PlanillaQuincenaWizard() {

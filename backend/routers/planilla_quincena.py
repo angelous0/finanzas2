@@ -97,12 +97,16 @@ def calcular_periodo(anio: int, mes: int, quincena: int) -> tuple[date, date]:
 
 
 def calcular_tarifas(sueldo_basico_total: float) -> dict:
-    """Dado el sueldo mensual, devuelve hora_simple, extra_25, extra_35 (2 decimales)."""
-    hs = round(sueldo_basico_total / 30 / 8, 2) if sueldo_basico_total > 0 else 0
+    """Dado el sueldo mensual, devuelve hora_simple, extra_25, extra_35.
+    IMPORTANTE: NO redondeamos aquí. El redondeo solo se hace al FINAL (neto).
+    El redondeo a 2 decimales es solo visual (helper fmt en UI).
+    Para DB guardamos con 4 decimales de precisión.
+    """
+    hs = (sueldo_basico_total / 30 / 8) if sueldo_basico_total > 0 else 0
     return {
         "hora_simple": hs,
-        "hora_extra_25": round(hs * 1.25, 2),
-        "hora_extra_35": round(hs * 1.35, 2),
+        "hora_extra_25": hs * 1.25,
+        "hora_extra_35": hs * 1.35,
     }
 
 
@@ -118,42 +122,47 @@ def calcular_linea(det: dict, ajustes: dict, afp: Optional[dict]) -> dict:
     adelantos = float(det.get('monto_adelantos') or 0)
 
     t = calcular_tarifas(sbt)
-    monto_hn = round(hn * t['hora_simple'], 2)
-    monto_h25 = round(h25 * t['hora_extra_25'], 2)
-    monto_h35 = round(h35 * t['hora_extra_35'], 2)
-    subtotal_horas = round(monto_hn + monto_h25 + monto_h35, 2)
+    # Cálculo sin redondeo intermedio — usamos la precisión completa de floats
+    monto_hn_raw = hn * t['hora_simple']
+    monto_h25_raw = h25 * t['hora_extra_25']
+    monto_h35_raw = h35 * t['hora_extra_35']
+    subtotal_horas_raw = monto_hn_raw + monto_h25_raw + monto_h35_raw
 
     sueldo_min = float(ajustes.get('sueldo_minimo') or 0)
     asig_pct = float(ajustes.get('asignacion_familiar_pct') or 0) / 100
-    # Asignación familiar MENSUAL, dividida por quincena
-    asig_monto_mensual = round(sueldo_min * asig_pct, 2) if asig_familiar else 0
-    asig_monto = round(asig_monto_mensual * FACTOR_QUINCENA, 2)
+    # Asignación familiar MENSUAL (sin redondeo), dividida por quincena
+    asig_monto_mensual_raw = (sueldo_min * asig_pct) if asig_familiar else 0.0
+    asig_monto_raw = asig_monto_mensual_raw * FACTOR_QUINCENA
 
     # AFP: se calcula sobre la remuneración MENSUAL y luego se divide para quincena.
     # Solo si tiene sueldo_planilla > 0 y afp asignada.
-    afp_aporte = 0.0
-    afp_prima = 0.0
+    afp_aporte_raw = 0.0
+    afp_prima_raw = 0.0
     if sueldo_planilla > 0 and afp:
-        base_mensual = sueldo_planilla + asig_monto_mensual
-        afp_aporte_mensual = round(base_mensual * float(afp['aporte_obligatorio_pct']) / 100, 2)
-        afp_prima_mensual = round(base_mensual * float(afp['prima_seguro_pct']) / 100, 2)
-        afp_aporte = round(afp_aporte_mensual * FACTOR_QUINCENA, 2)
-        afp_prima = round(afp_prima_mensual * FACTOR_QUINCENA, 2)
-    afp_total = round(afp_aporte + afp_prima, 2)
+        base_mensual = sueldo_planilla + asig_monto_mensual_raw
+        afp_aporte_raw = base_mensual * float(afp['aporte_obligatorio_pct']) / 100 * FACTOR_QUINCENA
+        afp_prima_raw = base_mensual * float(afp['prima_seguro_pct']) / 100 * FACTOR_QUINCENA
+    afp_total_raw = afp_aporte_raw + afp_prima_raw
 
-    neto = round(subtotal_horas + asig_monto - afp_total - tardanzas - adelantos, 2)
+    # Neto SIN redondeo intermedio — solo al final, 2 decimales
+    neto_raw = subtotal_horas_raw + asig_monto_raw - afp_total_raw - tardanzas - adelantos
 
+    # Retornamos TODO redondeado a 2 decimales para mostrar/persistir subtotales,
+    # PERO el neto se calculó desde los valores raw (precisión completa).
+    # Las tarifas se guardan con 4 decimales para mantener precisión en DB.
     return {
-        **t,
-        "monto_horas_normales": monto_hn,
-        "monto_horas_25": monto_h25,
-        "monto_horas_35": monto_h35,
-        "subtotal_horas": subtotal_horas,
-        "asig_familiar_monto": asig_monto,
-        "afp_aporte": afp_aporte,
-        "afp_prima": afp_prima,
-        "afp_total": afp_total,
-        "neto": neto,
+        "hora_simple":            round(t['hora_simple'], 4),
+        "hora_extra_25":          round(t['hora_extra_25'], 4),
+        "hora_extra_35":          round(t['hora_extra_35'], 4),
+        "monto_horas_normales":   round(monto_hn_raw, 2),
+        "monto_horas_25":         round(monto_h25_raw, 2),
+        "monto_horas_35":         round(monto_h35_raw, 2),
+        "subtotal_horas":         round(subtotal_horas_raw, 2),
+        "asig_familiar_monto":    round(asig_monto_raw, 2),
+        "afp_aporte":             round(afp_aporte_raw, 2),
+        "afp_prima":              round(afp_prima_raw, 2),
+        "afp_total":              round(afp_total_raw, 2),
+        "neto":                   round(neto_raw, 2),
     }
 
 
