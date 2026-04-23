@@ -326,11 +326,11 @@ export const deleteTrabajador = (id) => api.delete(`/trabajadores/${id}`);
 export const previewCalculosTrabajador = (data) => api.post('/trabajadores/calculos-preview', data);
 
 // Adelantos a trabajadores
-export const getAdelantos = (params) => api.get('/adelantos', { params });
-export const createAdelanto = (data) => api.post('/adelantos', data);
-export const deleteAdelanto = (id) => api.delete(`/adelantos/${id}`);
+export const getAdelantos = (params) => api.get('/adelantos-trabajador', { params });
+export const createAdelanto = (data) => api.post('/adelantos-trabajador', data);
+export const deleteAdelanto = (id) => api.delete(`/adelantos-trabajador/${id}`);
 export const getAdelantosPendientesTrabajador = (trabajadorId) =>
-  api.get(`/adelantos/trabajador/${trabajadorId}/pendientes`);
+  api.get(`/adelantos-trabajador/trabajador/${trabajadorId}/pendientes`);
 
 // Planilla Quincena
 export const getPlanillasQuincena = (params) => api.get('/planillas-quincena', { params });

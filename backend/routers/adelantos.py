@@ -23,7 +23,7 @@ class AdelantoIn(BaseModel):
 
 
 # ───── LIST ─────
-@router.get("/adelantos")
+@router.get("/adelantos-trabajador")
 async def list_adelantos(
     trabajador_id: Optional[int] = None,
     pendientes: Optional[bool] = None,
@@ -55,7 +55,7 @@ async def list_adelantos(
 
 
 # ───── POR TRABAJADOR (pendientes) — usado por el popup del wizard ─────
-@router.get("/adelantos/trabajador/{trabajador_id}/pendientes")
+@router.get("/adelantos-trabajador/trabajador/{trabajador_id}/pendientes")
 async def adelantos_pendientes(
     trabajador_id: int,
     empresa_id: int = Depends(get_empresa_id),
@@ -75,7 +75,7 @@ async def adelantos_pendientes(
 
 
 # ───── CREATE (con EGRESO automático) ─────
-@router.post("/adelantos")
+@router.post("/adelantos-trabajador")
 async def create_adelanto(data: AdelantoIn, empresa_id: int = Depends(get_empresa_id)):
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -129,7 +129,7 @@ async def create_adelanto(data: AdelantoIn, empresa_id: int = Depends(get_empres
 
 
 # ───── DELETE (revierte EGRESO) ─────
-@router.delete("/adelantos/{adelanto_id}")
+@router.delete("/adelantos-trabajador/{adelanto_id}")
 async def delete_adelanto(adelanto_id: int, empresa_id: int = Depends(get_empresa_id)):
     pool = await get_pool()
     async with pool.acquire() as conn:
