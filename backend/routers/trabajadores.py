@@ -62,24 +62,21 @@ def _calcular_derivados(row: dict, ajustes: dict, afp: Optional[dict]) -> dict:
     base_afp = sueldo_planilla + asig_fam_monto
     aporte_afp = 0.0
     prima_seguros = 0.0
-    comision_flujo = 0.0
     if afp:
         aporte_pct = float(afp.get('aporte_obligatorio_pct') or 0) / 100.0
         prima_pct = float(afp.get('prima_seguro_pct') or 0) / 100.0
-        flujo_pct = float(afp.get('comision_flujo_pct') or 0) / 100.0
         aporte_afp = base_afp * aporte_pct
         prima_seguros = base_afp * prima_pct
-        comision_flujo = base_afp * flujo_pct
 
+    # Todos los cálculos de planilla redondeados a 2 decimales
     return {
-        "hora_simple":          round(hora_simple, 4),
-        "hora_extra_25":        round(hora_extra_25, 4),
-        "hora_extra_35":        round(hora_extra_35, 4),
+        "hora_simple":          round(hora_simple, 2),
+        "hora_extra_25":        round(hora_extra_25, 2),
+        "hora_extra_35":        round(hora_extra_35, 2),
         "asignacion_familiar_monto": round(asig_fam_monto, 2),
         "base_afp":             round(base_afp, 2),
         "aporte_afp":           round(aporte_afp, 2),
         "prima_seguros":        round(prima_seguros, 2),
-        "comision_flujo":       round(comision_flujo, 2),
         # metadatos para la UI
         "meta": {
             "sueldo_minimo":    sueldo_minimo,
@@ -87,7 +84,6 @@ def _calcular_derivados(row: dict, ajustes: dict, afp: Optional[dict]) -> dict:
             "afp_nombre":       afp.get('nombre') if afp else None,
             "afp_aporte_pct":   float(afp.get('aporte_obligatorio_pct') or 0) if afp else 0,
             "afp_prima_pct":    float(afp.get('prima_seguro_pct') or 0) if afp else 0,
-            "afp_flujo_pct":    float(afp.get('comision_flujo_pct') or 0) if afp else 0,
         }
     }
 

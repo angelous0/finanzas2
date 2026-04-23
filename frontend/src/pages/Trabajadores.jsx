@@ -10,7 +10,6 @@ import { useEmpresa } from '../context/EmpresaContext';
 const AREAS = ['ADMINISTRACION', 'PRODUCCION', 'VENTAS', 'MARKETING'];
 
 const fmt = (v) => `S/ ${Number(v || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-const fmt4 = (v) => `S/ ${Number(v || 0).toLocaleString('es-PE', { minimumFractionDigits: 4, maximumFractionDigits: 4 })}`;
 
 const emptyForm = {
   dni: '', nombre: '', area: 'ADMINISTRACION',
@@ -431,9 +430,9 @@ export default function Trabajadores() {
                     <div>
                       <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">Horas</div>
                       <div className="bg-card rounded-md border border-border divide-y divide-border">
-                        <Row label="Hora simple" value={fmt4(calculos.hora_simple)} hint="sueldo_total / 30 / 8" />
-                        <Row label="Hora extra 25%" value={fmt4(calculos.hora_extra_25)} hint="hora simple × 1.25" />
-                        <Row label="Hora extra 35%" value={fmt4(calculos.hora_extra_35)} hint="hora simple × 1.35" />
+                        <Row label="Hora simple" value={fmt(calculos.hora_simple)} hint="sueldo_total / 30 / 8" />
+                        <Row label="Hora extra 25%" value={fmt(calculos.hora_extra_25)} hint="hora simple × 1.25" />
+                        <Row label="Hora extra 35%" value={fmt(calculos.hora_extra_35)} hint="hora simple × 1.35" />
                       </div>
                     </div>
                     <div>
@@ -453,10 +452,6 @@ export default function Trabajadores() {
                         <Row label="Prima de seguros"
                              value={fmt(calculos.prima_seguros)}
                              hint={`${calculos.meta.afp_prima_pct}% × base`}
-                             active={!!form.afp_id} />
-                        <Row label="Comisión AFP (flujo)"
-                             value={fmt(calculos.comision_flujo)}
-                             hint={`${calculos.meta.afp_flujo_pct}% × base`}
                              active={!!form.afp_id} />
                       </div>
                     </div>
