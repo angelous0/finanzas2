@@ -509,10 +509,11 @@ export default function PlanillaQuincenaWizard() {
         </div>
       )}
 
-      {/* PASO 3 — Medios de pago */}
+      {/* PASO 3 — Medios de pago POR TRABAJADOR */}
       {step === 3 && planillaId && (
         <PasoPagos
           planillaId={planillaId}
+          lineas={lineas}
           totalNeto={totales.neto || 0}
           cuentas={cuentas}
           estado={estado}
@@ -583,38 +584,83 @@ export default function PlanillaQuincenaWizard() {
 }
 
 // ─────────────────────────────────────────────────
-// Paso 3 — Medios de pago
+// Paso 3 — Medios de pago POR TRABAJADOR
 // ─────────────────────────────────────────────────
-function PasoPagos({ planillaId, totalNeto, cuentas, estado, existingPagos, onPagada, onBack }) {
-  const [pagos, setPagos] = useState([{ cuenta_id: '', monto: '', referencia: '' }]);
+function PasoPagos({ planillaId, lineas, totalNeto, cuentas, estado, existingPagos, onPagada, onBack }) {
+  // Estado: map de detalle_id → [medios]
+  const [pagosPorDetalle, setPagosPorDetalle] = useState({});
   const [saving, setSaving] = useState(false);
 
+  // Al montar: auto-poblar desde los medios_pago_default de cada línea
   useEffect(() => {
-    if (pagos.length === 1 && !pagos[0].cuenta_id && cuentas.length > 0) {
-      setPagos([{ cuenta_id: cuentas[0].id, monto: totalNeto.toFixed(2), referencia: '' }]);
-    }
-  }, [cuentas, totalNeto]); // eslint-disable-line
+    const mapa = {};
+    lineas.forEach(l => {
+      const neto = parseFloat(l.neto) || 0;
+      const defaults = l.medios_pago_default || [];
+      if (defaults.length > 0) {
+        // Distribuir según porcentajes. El último absorbe redondeo.
+        let restante = neto;
+        mapa[l.id] = defaults.map((m, idx) => {
+          const monto = idx === defaults.length - 1
+            ? +restante.toFixed(2)
+            : +(neto * (parseFloat(m.porcentaje) / 100)).toFixed(2);
+          restante -= monto;
+          return { cuenta_id: m.cuenta_id, monto, referencia: '' };
+        });
+      } else {
+        // Sin defaults: un solo medio vacío con el neto completo
+        mapa[l.id] = [{ cuenta_id: '', monto: neto.toFixed(2), referencia: '' }];
+      }
+    });
+    setPagosPorDetalle(mapa);
+  }, [lineas]);
 
-  const suma = pagos.reduce((s, p) => s + (parseFloat(p.monto) || 0), 0);
-  const diferencia = +(totalNeto - suma).toFixed(2);
-  const coincide = Math.abs(diferencia) < 0.01;
-
-  const actualizar = (i, campo, valor) => {
-    setPagos(prev => { const arr = [...prev]; arr[i] = {...arr[i], [campo]: valor}; return arr; });
+  const actualizar = (detalleId, idx, campo, valor) => {
+    setPagosPorDetalle(prev => {
+      const lista = [...(prev[detalleId] || [])];
+      lista[idx] = { ...lista[idx], [campo]: valor };
+      return { ...prev, [detalleId]: lista };
+    });
   };
-  const agregar = () => setPagos(prev => [...prev, { cuenta_id: '', monto: '', referencia: '' }]);
-  const eliminar = (i) => setPagos(prev => prev.filter((_,k) => k !== i));
+  const agregar = (detalleId) => setPagosPorDetalle(prev => ({
+    ...prev,
+    [detalleId]: [...(prev[detalleId] || []), { cuenta_id: '', monto: '', referencia: '' }],
+  }));
+  const eliminar = (detalleId, idx) => setPagosPorDetalle(prev => ({
+    ...prev,
+    [detalleId]: (prev[detalleId] || []).filter((_, i) => i !== idx),
+  }));
+
+  // Validación por trabajador
+  const validaciones = lineas.map(l => {
+    const medios = pagosPorDetalle[l.id] || [];
+    const suma = medios.reduce((s, m) => s + (parseFloat(m.monto) || 0), 0);
+    const neto = parseFloat(l.neto) || 0;
+    return { linea: l, suma, neto, diff: +(neto - suma).toFixed(2), ok: Math.abs(neto - suma) < 0.01 };
+  });
+
+  const totalSuma = validaciones.reduce((s, v) => s + v.suma, 0);
+  const todoOk = validaciones.every(v => v.ok);
 
   const handlePagar = async () => {
-    if (!coincide) { toast.error(`La suma de pagos no coincide con el total. Diferencia: ${fmt(diferencia)}`); return; }
-    if (!window.confirm(`¿Pagar ${fmt(totalNeto)} con ${pagos.length} medio(s)?\n\nSe generarán egresos reales en las cuentas seleccionadas.`)) return;
+    if (!todoOk) {
+      const err = validaciones.find(v => !v.ok);
+      toast.error(`${err.linea.nombre}: medios (${fmt(err.suma)}) ≠ neto (${fmt(err.neto)})`);
+      return;
+    }
+    if (!window.confirm(`¿Pagar planilla de ${fmt(totalNeto)}?\nSe generarán egresos reales.`)) return;
     setSaving(true);
     try {
       await pagarPlanillaQuincena(planillaId, {
-        pagos: pagos.map(p => ({
-          cuenta_id: parseInt(p.cuenta_id),
-          monto: parseFloat(p.monto),
-          referencia: p.referencia || null,
+        pagos_por_trabajador: lineas.map(l => ({
+          detalle_id: l.id,
+          medios: (pagosPorDetalle[l.id] || [])
+            .filter(m => m.cuenta_id && parseFloat(m.monto) > 0)
+            .map(m => ({
+              cuenta_id: parseInt(m.cuenta_id),
+              monto: parseFloat(m.monto),
+              referencia: m.referencia || null,
+            })),
         })),
       });
       toast.success('Planilla pagada exitosamente');
@@ -625,18 +671,25 @@ function PasoPagos({ planillaId, totalNeto, cuentas, estado, existingPagos, onPa
   };
 
   const handleAnular = async () => {
-    if (!window.confirm('¿Anular el pago? Se revertirán los egresos en las cuentas y los adelantos volverán a pendientes.')) return;
+    if (!window.confirm('¿Anular el pago? Se revertirán los egresos y los adelantos volverán a pendientes.')) return;
     setSaving(true);
     try {
       await anularPagoPlanillaQuincena(planillaId);
-      toast.success('Pago anulado. Planilla vuelve a aprobada.');
+      toast.success('Pago anulado.');
       onPagada();
     } catch (e) {
       toast.error(typeof e.response?.data?.detail === 'string' ? e.response.data.detail : 'Error');
     } finally { setSaving(false); }
   };
 
+  // Estado PAGADA — mostrar resumen de pagos aplicados
   if (estado === 'pagada') {
+    const pagosPorDet = {};
+    existingPagos.forEach(p => {
+      const k = p.detalle_id || 0;
+      if (!pagosPorDet[k]) pagosPorDet[k] = [];
+      pagosPorDet[k].push(p);
+    });
     return (
       <div className="bg-card rounded-xl border border-border p-6 space-y-4">
         <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-md p-4 flex items-center gap-3">
@@ -646,26 +699,30 @@ function PasoPagos({ planillaId, totalNeto, cuentas, estado, existingPagos, onPa
             <div className="text-xs text-muted-foreground mt-0.5">Los egresos ya se generaron en las cuentas.</div>
           </div>
         </div>
-        <div>
-          <h3 className="text-sm font-semibold mb-2">Medios de pago aplicados:</h3>
-          <table className="w-full text-sm border border-border rounded">
-            <thead className="bg-muted/40">
-              <tr>
-                <th className="text-left px-3 py-2 text-xs font-medium">Cuenta</th>
-                <th className="text-left px-3 py-2 text-xs font-medium">Referencia</th>
-                <th className="text-right px-3 py-2 text-xs font-medium">Monto</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border">
-              {existingPagos.map(p => (
-                <tr key={p.id}>
-                  <td className="px-3 py-2">{p.cuenta_nombre}</td>
-                  <td className="px-3 py-2 text-xs text-muted-foreground">{p.referencia || '—'}</td>
-                  <td className="px-3 py-2 text-right font-mono">{fmt(p.monto)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <div className="space-y-3">
+          {lineas.map(l => (
+            <div key={l.id} className="border border-border rounded-md p-3">
+              <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                  <div className="h-7 w-7 rounded-full bg-gradient-to-br from-blue-500 to-emerald-500 flex items-center justify-center text-white text-[10px] font-semibold">
+                    {(l.nombre || '?').substring(0, 2).toUpperCase()}
+                  </div>
+                  <div>
+                    <div className="font-semibold text-sm">{l.nombre}</div>
+                    <div className="text-[10px] text-muted-foreground">Neto: {fmt(l.neto)}</div>
+                  </div>
+                </div>
+              </div>
+              <div className="space-y-1">
+                {(pagosPorDet[l.id] || []).map(p => (
+                  <div key={p.id} className="flex items-center justify-between text-sm bg-muted/30 rounded px-2 py-1">
+                    <span className="text-xs">{p.cuenta_nombre}{p.referencia ? ` · ${p.referencia}` : ''}</span>
+                    <span className="font-mono">{fmt(p.monto)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
         <div className="flex justify-between pt-2 border-t border-border">
           <button onClick={onBack} className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-md border border-border hover:bg-muted">
@@ -681,47 +738,82 @@ function PasoPagos({ planillaId, totalNeto, cuentas, estado, existingPagos, onPa
   }
 
   return (
-    <div className="bg-card rounded-xl border border-border p-6 space-y-5">
-      <h2 className="text-lg font-semibold flex items-center gap-2"><CreditCard size={18}/> Medios de pago</h2>
-      <div className="bg-muted/30 rounded-md p-3 flex items-center justify-between">
-        <span className="text-sm">Total a pagar:</span>
-        <span className="text-lg font-bold font-mono">{fmt(totalNeto)}</span>
+    <div className="space-y-4">
+      <div className="bg-card rounded-xl border border-border p-4">
+        <h2 className="text-lg font-semibold flex items-center gap-2 mb-1"><CreditCard size={18}/> Pago por trabajador</h2>
+        <p className="text-xs text-muted-foreground">
+          Cada trabajador tiene sus propios medios de pago. Se pre-poblaron según los defaults de su ficha.
+        </p>
       </div>
-      <div className="space-y-2">
-        {pagos.map((p, i) => (
-          <div key={i} className="grid grid-cols-12 gap-2 items-center">
-            <select value={p.cuenta_id} onChange={e => actualizar(i, 'cuenta_id', e.target.value)}
-              className="col-span-5 px-3 py-2 text-sm rounded-md border border-border bg-background">
-              <option value="">— Cuenta —</option>
-              {cuentas.map(c => <option key={c.id} value={c.id}>{c.nombre} ({fmt(c.saldo_actual)})</option>)}
-            </select>
-            <input type="number" step="0.01" min="0" placeholder="Monto" value={p.monto}
-              onChange={e => actualizar(i, 'monto', e.target.value)}
-              className="col-span-3 px-3 py-2 text-sm rounded-md border border-border bg-background font-mono" />
-            <input type="text" placeholder="Referencia (N° op, cheque)" value={p.referencia}
-              onChange={e => actualizar(i, 'referencia', e.target.value)}
-              className="col-span-3 px-3 py-2 text-sm rounded-md border border-border bg-background" />
-            <button onClick={() => eliminar(i)} disabled={pagos.length === 1}
-              className="col-span-1 h-9 flex items-center justify-center rounded-md hover:bg-red-500/10 text-red-600 disabled:opacity-30">
-              <Trash2 size={14}/>
-            </button>
-          </div>
-        ))}
-        <button onClick={agregar} type="button"
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-dashed border-border hover:bg-muted">
-          <Plus size={12}/> Agregar otro medio
-        </button>
+
+      <div className="space-y-3">
+        {validaciones.map(({ linea: l, suma, neto, diff, ok }) => {
+          const medios = pagosPorDetalle[l.id] || [];
+          return (
+            <div key={l.id} className={`bg-card rounded-xl border p-4 ${ok ? 'border-border' : 'border-amber-500/40'}`}>
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="h-9 w-9 rounded-full bg-gradient-to-br from-blue-500 to-emerald-500 flex items-center justify-center text-white text-[11px] font-semibold">
+                    {(l.nombre || '?').substring(0, 2).toUpperCase()}
+                  </div>
+                  <div>
+                    <div className="font-semibold text-sm">{l.nombre}</div>
+                    <div className="text-[10px] text-muted-foreground">{l.area}{l.unidad_interna_nombre ? ` · ${l.unidad_interna_nombre}` : ''}</div>
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Neto a pagar</div>
+                  <div className="text-base font-bold font-mono text-emerald-700 dark:text-emerald-400">{fmt(neto)}</div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                {medios.map((m, idx) => (
+                  <div key={idx} className="grid grid-cols-12 gap-2 items-center">
+                    <select value={m.cuenta_id} onChange={e => actualizar(l.id, idx, 'cuenta_id', e.target.value)}
+                      className="col-span-5 px-3 py-2 text-sm rounded-md border border-border bg-background">
+                      <option value="">— Cuenta —</option>
+                      {cuentas.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
+                    </select>
+                    <input type="number" step="0.01" min="0" placeholder="Monto" value={m.monto}
+                      onChange={e => actualizar(l.id, idx, 'monto', e.target.value)}
+                      className="col-span-3 px-3 py-2 text-sm rounded-md border border-border bg-background font-mono" />
+                    <input type="text" placeholder="Referencia" value={m.referencia}
+                      onChange={e => actualizar(l.id, idx, 'referencia', e.target.value)}
+                      className="col-span-3 px-3 py-2 text-sm rounded-md border border-border bg-background" />
+                    <button onClick={() => eliminar(l.id, idx)} disabled={medios.length === 1}
+                      className="col-span-1 h-9 flex items-center justify-center rounded-md hover:bg-red-500/10 text-red-600 disabled:opacity-30">
+                      <Trash2 size={14}/>
+                    </button>
+                  </div>
+                ))}
+                <button onClick={() => agregar(l.id)} type="button"
+                  className="inline-flex items-center gap-1.5 px-3 py-1 text-xs rounded-md border border-dashed border-border hover:bg-muted">
+                  <Plus size={12}/> Agregar medio
+                </button>
+              </div>
+
+              <div className={`mt-2 text-[11px] flex items-center gap-1.5 ${ok ? 'text-emerald-700' : 'text-amber-700'}`}>
+                {ok ? <Check size={12}/> : <AlertTriangle size={12}/>}
+                Suma: <strong className="font-mono">{fmt(suma)}</strong>
+                {!ok && <span> · Diferencia: <strong className="font-mono">{fmt(diff)}</strong></span>}
+                {ok && <span>· coincide con neto</span>}
+              </div>
+            </div>
+          );
+        })}
       </div>
-      <div className={`rounded-md p-3 text-sm ${coincide ? 'bg-emerald-500/5 border border-emerald-500/20' : 'bg-amber-500/5 border border-amber-500/20'}`}>
-        Suma de medios: <strong className="font-mono">{fmt(suma)}</strong>
-        {!coincide && <span className="ml-2 text-amber-700">· Diferencia: <strong>{fmt(diferencia)}</strong></span>}
-        {coincide && <span className="ml-2 text-emerald-700">✓ coincide con total</span>}
+
+      <div className="bg-muted/40 rounded-md p-3 flex items-center justify-between">
+        <span className="text-sm font-medium">Total consolidado</span>
+        <span className="text-lg font-bold font-mono">{fmt(totalSuma)} / {fmt(totalNeto)}</span>
       </div>
+
       <div className="flex justify-between pt-2 border-t border-border">
         <button onClick={onBack} className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-md border border-border hover:bg-muted">
           <ChevronLeft size={14}/> Volver
         </button>
-        <button onClick={handlePagar} disabled={saving || !coincide}
+        <button onClick={handlePagar} disabled={saving || !todoOk}
           className="inline-flex items-center gap-1.5 bg-emerald-600 text-white px-4 py-2 text-sm font-medium rounded-md hover:bg-emerald-700 disabled:opacity-50"
           data-testid="btn-pagar-planilla">
           <Check size={14}/> {saving ? 'Pagando…' : 'Aprobar y pagar'}

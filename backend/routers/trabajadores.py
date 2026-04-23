@@ -259,6 +259,73 @@ async def update_trabajador(
 
 # ───── DELETE ─────
 
+# ───── MEDIOS DE PAGO POR DEFECTO ─────
+
+class MedioPagoDefaultIn(BaseModel):
+    cuenta_id: int
+    porcentaje: float = Field(gt=0, le=100)
+    orden: Optional[int] = 0
+    notas: Optional[str] = None
+
+
+@router.get("/trabajadores/{trabajador_id}/medios-pago")
+async def list_medios_pago(trabajador_id: int, empresa_id: int = Depends(get_empresa_id)):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("""
+            SELECT m.*, c.nombre AS cuenta_nombre, c.tipo AS cuenta_tipo
+              FROM finanzas2.fin_trabajador_medio_pago_default m
+              JOIN finanzas2.cont_cuenta_financiera c ON m.cuenta_id = c.id
+             WHERE m.trabajador_id = $1 AND m.empresa_id = $2
+             ORDER BY m.orden, m.id
+        """, trabajador_id, empresa_id)
+        return [dict(r) for r in rows]
+
+
+@router.put("/trabajadores/{trabajador_id}/medios-pago")
+async def set_medios_pago(
+    trabajador_id: int,
+    medios: list[MedioPagoDefaultIn],
+    empresa_id: int = Depends(get_empresa_id),
+):
+    """Reemplaza completamente la lista de medios del trabajador.
+    Valida que la suma de porcentajes sea 100 (o 0 si se limpia todo)."""
+    total_pct = sum(m.porcentaje for m in medios)
+    if medios and abs(total_pct - 100) > 0.01:
+        raise HTTPException(400, f"La suma de porcentajes debe ser 100% (actual: {total_pct}%)")
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            # Validar trabajador
+            t = await conn.fetchval(
+                "SELECT id FROM finanzas2.fin_trabajador WHERE id = $1 AND empresa_id = $2",
+                trabajador_id, empresa_id)
+            if not t:
+                raise HTTPException(404, "Trabajador no encontrado")
+            # Reemplazar
+            await conn.execute(
+                "DELETE FROM finanzas2.fin_trabajador_medio_pago_default WHERE trabajador_id = $1",
+                trabajador_id)
+            for idx, m in enumerate(medios):
+                await conn.execute("""
+                    INSERT INTO finanzas2.fin_trabajador_medio_pago_default
+                        (empresa_id, trabajador_id, cuenta_id, porcentaje, orden, notas)
+                    VALUES ($1, $2, $3, $4, $5, $6)
+                """, empresa_id, trabajador_id, m.cuenta_id, m.porcentaje, idx, m.notas)
+        # Re-leer
+        rows = await conn.fetch("""
+            SELECT m.*, c.nombre AS cuenta_nombre
+              FROM finanzas2.fin_trabajador_medio_pago_default m
+              JOIN finanzas2.cont_cuenta_financiera c ON m.cuenta_id = c.id
+             WHERE m.trabajador_id = $1
+             ORDER BY m.orden
+        """, trabajador_id)
+        return [dict(r) for r in rows]
+
+
+# ───── DELETE TRABAJADOR ─────
+
 @router.delete("/trabajadores/{trabajador_id}")
 async def delete_trabajador(trabajador_id: int, empresa_id: int = Depends(get_empresa_id)):
     pool = await get_pool()

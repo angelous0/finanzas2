@@ -81,8 +81,17 @@ class PagoIn(BaseModel):
     notas: Optional[str] = None
 
 
+class PagoTrabajadorIn(BaseModel):
+    detalle_id: int
+    medios: List[PagoIn]
+
+
 class PagarIn(BaseModel):
-    pagos: List[PagoIn]
+    # Acepta dos formas:
+    # - pagos_por_trabajador: lista de {detalle_id, medios[]} — nueva forma detallada
+    # - pagos: lista plana [PagoIn] — legacy (sin detalle_id, pago consolidado)
+    pagos_por_trabajador: Optional[List[PagoTrabajadorIn]] = None
+    pagos: Optional[List[PagoIn]] = None
     fecha_pago: Optional[date] = None
 
 
@@ -209,6 +218,23 @@ async def calcular_preview(data: CalcularInput, empresa_id: int = Depends(get_em
              ORDER BY t.nombre
         """, empresa_id)
 
+        # Precargar medios por defecto de todos los trabajadores
+        medios_default_rows = await conn.fetch("""
+            SELECT m.trabajador_id, m.cuenta_id, m.porcentaje, m.orden,
+                   c.nombre AS cuenta_nombre
+              FROM finanzas2.fin_trabajador_medio_pago_default m
+              JOIN finanzas2.cont_cuenta_financiera c ON m.cuenta_id = c.id
+             WHERE m.empresa_id = $1
+             ORDER BY m.orden
+        """, empresa_id)
+        medios_por_trabajador = {}
+        for r in medios_default_rows:
+            medios_por_trabajador.setdefault(r['trabajador_id'], []).append({
+                "cuenta_id": r['cuenta_id'],
+                "cuenta_nombre": r['cuenta_nombre'],
+                "porcentaje": float(r['porcentaje']),
+            })
+
         lineas = []
         warnings = []
         for t in trabs:
@@ -250,6 +276,8 @@ async def calcular_preview(data: CalcularInput, empresa_id: int = Depends(get_em
             }
             calc = calcular_linea(det, ajustes_d, afp)
             det.update(calc)
+            # Agregar medios de pago default
+            det["medios_pago_default"] = medios_por_trabajador.get(td['id'], [])
             lineas.append(det)
 
         return {
@@ -625,42 +653,103 @@ async def pagar_planilla(
                 raise HTTPException(400, f"Planilla debe estar aprobada (estado actual: {pl['estado']})")
 
             total_neto = float(pl['total_neto'])
-            suma_pagos = sum(float(p.monto) for p in data.pagos)
-            if abs(suma_pagos - total_neto) > 0.01:
-                raise HTTPException(400,
-                    f"La suma de medios de pago ({suma_pagos:.2f}) no coincide con el total neto ({total_neto:.2f})")
-
             fecha_pago = data.fecha_pago or date.today()
             periodo_str = f"{pl['anio']}-{pl['mes']:02d}-Q{pl['quincena']}"
 
-            # Crear EGRESOS y pagos
-            for p in data.pagos:
-                cta = await conn.fetchrow(
-                    "SELECT id, nombre FROM finanzas2.cont_cuenta_financiera WHERE id = $1 AND empresa_id = $2",
-                    p.cuenta_id, empresa_id)
-                if not cta:
-                    raise HTTPException(404, f"Cuenta {p.cuenta_id} no encontrada")
+            # Modo NUEVO: pagos por trabajador (recomendado)
+            if data.pagos_por_trabajador:
+                # Cargar detalles para validar
+                dets = await conn.fetch("""
+                    SELECT id, nombre, neto FROM finanzas2.fin_planilla_quincena_detalle
+                     WHERE planilla_id = $1
+                """, planilla_id)
+                det_map = {d['id']: d for d in dets}
 
-                mov = await conn.fetchrow("""
-                    INSERT INTO finanzas2.fin_movimiento_cuenta
-                        (cuenta_id, empresa_id, tipo, monto, descripcion, fecha, referencia_id, referencia_tipo)
-                    VALUES ($1, $2, 'EGRESO', $3, $4, $5, $6, 'planilla_quincena')
-                    RETURNING id
-                """, p.cuenta_id, empresa_id, p.monto,
-                     f"Pago planilla {periodo_str}" + (f" — {p.referencia}" if p.referencia else ""),
-                     fecha_pago, str(planilla_id))
+                # Validar cada trabajador: suma de medios = su neto
+                suma_total = 0.0
+                for pt in data.pagos_por_trabajador:
+                    det = det_map.get(pt.detalle_id)
+                    if not det:
+                        raise HTTPException(400, f"Detalle {pt.detalle_id} no pertenece a la planilla")
+                    suma_trab = sum(float(m.monto) for m in pt.medios)
+                    neto_trab = float(det['neto'])
+                    if abs(suma_trab - neto_trab) > 0.01:
+                        raise HTTPException(400,
+                            f"Trabajador {det['nombre']}: suma de medios ({suma_trab:.2f}) "
+                            f"no coincide con su neto ({neto_trab:.2f})")
+                    suma_total += suma_trab
 
-                await conn.execute("""
-                    UPDATE finanzas2.cont_cuenta_financiera
-                       SET saldo_actual = saldo_actual - $1, updated_at = NOW()
-                     WHERE id = $2
-                """, p.monto, p.cuenta_id)
+                # Validar total
+                if abs(suma_total - total_neto) > 0.01:
+                    raise HTTPException(400, f"Total de pagos no coincide con el neto de la planilla")
 
-                await conn.execute("""
-                    INSERT INTO finanzas2.fin_planilla_quincena_pago
-                        (planilla_id, empresa_id, cuenta_id, monto, referencia, notas, movimiento_cuenta_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7)
-                """, planilla_id, empresa_id, p.cuenta_id, p.monto, p.referencia, p.notas, mov['id'])
+                # Crear egresos y pagos — agrupados pero cada uno asociado al detalle
+                for pt in data.pagos_por_trabajador:
+                    det = det_map[pt.detalle_id]
+                    for p in pt.medios:
+                        cta = await conn.fetchrow(
+                            "SELECT id, nombre FROM finanzas2.cont_cuenta_financiera WHERE id = $1 AND empresa_id = $2",
+                            p.cuenta_id, empresa_id)
+                        if not cta:
+                            raise HTTPException(404, f"Cuenta {p.cuenta_id} no encontrada")
+
+                        mov = await conn.fetchrow("""
+                            INSERT INTO finanzas2.fin_movimiento_cuenta
+                                (cuenta_id, empresa_id, tipo, monto, descripcion, fecha, referencia_id, referencia_tipo)
+                            VALUES ($1, $2, 'EGRESO', $3, $4, $5, $6, 'planilla_quincena')
+                            RETURNING id
+                        """, p.cuenta_id, empresa_id, p.monto,
+                             f"Pago planilla {periodo_str} · {det['nombre']}" + (f" — {p.referencia}" if p.referencia else ""),
+                             fecha_pago, str(planilla_id))
+
+                        await conn.execute("""
+                            UPDATE finanzas2.cont_cuenta_financiera
+                               SET saldo_actual = saldo_actual - $1, updated_at = NOW()
+                             WHERE id = $2
+                        """, p.monto, p.cuenta_id)
+
+                        await conn.execute("""
+                            INSERT INTO finanzas2.fin_planilla_quincena_pago
+                                (planilla_id, empresa_id, cuenta_id, detalle_id, monto, referencia, notas, movimiento_cuenta_id)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                        """, planilla_id, empresa_id, p.cuenta_id, pt.detalle_id, p.monto, p.referencia, p.notas, mov['id'])
+
+            # Modo LEGACY: pagos consolidados (sin asociar a detalle)
+            elif data.pagos:
+                suma_pagos = sum(float(p.monto) for p in data.pagos)
+                if abs(suma_pagos - total_neto) > 0.01:
+                    raise HTTPException(400,
+                        f"La suma de medios de pago ({suma_pagos:.2f}) no coincide con el total neto ({total_neto:.2f})")
+
+                for p in data.pagos:
+                    cta = await conn.fetchrow(
+                        "SELECT id, nombre FROM finanzas2.cont_cuenta_financiera WHERE id = $1 AND empresa_id = $2",
+                        p.cuenta_id, empresa_id)
+                    if not cta:
+                        raise HTTPException(404, f"Cuenta {p.cuenta_id} no encontrada")
+
+                    mov = await conn.fetchrow("""
+                        INSERT INTO finanzas2.fin_movimiento_cuenta
+                            (cuenta_id, empresa_id, tipo, monto, descripcion, fecha, referencia_id, referencia_tipo)
+                        VALUES ($1, $2, 'EGRESO', $3, $4, $5, $6, 'planilla_quincena')
+                        RETURNING id
+                    """, p.cuenta_id, empresa_id, p.monto,
+                         f"Pago planilla {periodo_str}" + (f" — {p.referencia}" if p.referencia else ""),
+                         fecha_pago, str(planilla_id))
+
+                    await conn.execute("""
+                        UPDATE finanzas2.cont_cuenta_financiera
+                           SET saldo_actual = saldo_actual - $1, updated_at = NOW()
+                         WHERE id = $2
+                    """, p.monto, p.cuenta_id)
+
+                    await conn.execute("""
+                        INSERT INTO finanzas2.fin_planilla_quincena_pago
+                            (planilla_id, empresa_id, cuenta_id, monto, referencia, notas, movimiento_cuenta_id)
+                        VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    """, planilla_id, empresa_id, p.cuenta_id, p.monto, p.referencia, p.notas, mov['id'])
+            else:
+                raise HTTPException(400, "Debe enviar 'pagos_por_trabajador' o 'pagos'")
 
             # Marcar adelantos como descontados
             await conn.execute("""

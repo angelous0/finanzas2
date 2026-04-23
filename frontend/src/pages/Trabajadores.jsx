@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, Pencil, Trash2, X, Users, Calculator, Check, ChevronDown, ChevronUp } from 'lucide-react';
+import { Plus, Pencil, Trash2, X, Users, Calculator, Check, ChevronDown, ChevronUp, CreditCard } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   getTrabajadores, createTrabajador, updateTrabajador, deleteTrabajador,
   previewCalculosTrabajador, getAfps, getUnidadesInternas, getAjustesPlanilla,
+  getCuentasFinancieras, getMediosPagoTrabajador, setMediosPagoTrabajador,
 } from '../services/api';
 import { useEmpresa } from '../context/EmpresaContext';
 
@@ -29,6 +30,7 @@ export default function Trabajadores() {
   const [trabajadores, setTrabajadores] = useState([]);
   const [afps, setAfps] = useState([]);
   const [unidades, setUnidades] = useState([]);
+  const [cuentas, setCuentas] = useState([]);
   const [ajustes, setAjustes] = useState(null);
   const [loading, setLoading] = useState(true);
   const [filtroArea, setFiltroArea] = useState('');
@@ -40,6 +42,7 @@ export default function Trabajadores() {
   const [showSueldoDetalle, setShowSueldoDetalle] = useState(false);
   const [calculos, setCalculos] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [medios, setMedios] = useState([]);  // Medios de pago default del trabajador
 
   const load = useCallback(async () => {
     if (!empresaActual) return;
@@ -48,16 +51,18 @@ export default function Trabajadores() {
       const params = {};
       if (filtroArea) params.area = filtroArea;
       if (filtroActivo !== null) params.activo = filtroActivo;
-      const [t, a, u, aj] = await Promise.all([
+      const [t, a, u, aj, c] = await Promise.all([
         getTrabajadores(params),
         getAfps({ activo: true }),
         getUnidadesInternas(),
         getAjustesPlanilla(),
+        getCuentasFinancieras(),
       ]);
       setTrabajadores(t.data || []);
       setAfps(a.data || []);
       setUnidades(u.data || []);
       setAjustes(aj.data);
+      setCuentas((c.data || []).filter(ct => !ct.es_ficticia && ct.activo !== false));
     } catch (e) {
       toast.error('Error cargando trabajadores');
     } finally { setLoading(false); }
@@ -91,10 +96,11 @@ export default function Trabajadores() {
     setEditing(null);
     setForm({ ...emptyForm, horas_quincenales: ajustes?.horas_quincena_default || 120 });
     setShowSueldoDetalle(false);
+    setMedios([]);
     setShowForm(true);
   };
 
-  const openEdit = (t) => {
+  const openEdit = async (t) => {
     setEditing(t);
     setForm({
       dni: t.dni || '',
@@ -114,6 +120,11 @@ export default function Trabajadores() {
     setShowSueldoDetalle(
       (parseFloat(t.sueldo_planilla) || 0) !== 0 && (parseFloat(t.sueldo_basico) || 0) !== 0
     );
+    // Cargar medios de pago default
+    try {
+      const r = await getMediosPagoTrabajador(t.id);
+      setMedios((r.data || []).map(m => ({ cuenta_id: m.cuenta_id, porcentaje: m.porcentaje })));
+    } catch { setMedios([]); }
     setShowForm(true);
   };
 
@@ -133,15 +144,31 @@ export default function Trabajadores() {
       fecha_ingreso: form.fecha_ingreso || null,
       notas: form.notas || null,
     };
+    // Validar medios de pago default
+    const mediosValidos = medios.filter(m => m.cuenta_id && parseFloat(m.porcentaje) > 0);
+    const sumaPct = mediosValidos.reduce((s, m) => s + (parseFloat(m.porcentaje) || 0), 0);
+    if (mediosValidos.length > 0 && Math.abs(sumaPct - 100) > 0.01) {
+      toast.error(`La suma de porcentajes de medios de pago debe ser 100% (actual: ${sumaPct.toFixed(2)}%)`);
+      return;
+    }
+
     setSaving(true);
     try {
+      let trabajadorId;
       if (editing) {
         await updateTrabajador(editing.id, payload);
+        trabajadorId = editing.id;
         toast.success('Trabajador actualizado');
       } else {
-        await createTrabajador(payload);
+        const r = await createTrabajador(payload);
+        trabajadorId = r.data.id;
         toast.success('Trabajador creado');
       }
+      // Guardar medios de pago
+      await setMediosPagoTrabajador(trabajadorId, mediosValidos.map(m => ({
+        cuenta_id: parseInt(m.cuenta_id),
+        porcentaje: parseFloat(m.porcentaje),
+      })));
       setShowForm(false);
       load();
     } catch (err) {
@@ -149,6 +176,15 @@ export default function Trabajadores() {
       toast.error(msg);
     } finally { setSaving(false); }
   };
+
+  const agregarMedio = () => setMedios(prev => [...prev, { cuenta_id: '', porcentaje: '' }]);
+  const actualizarMedio = (idx, campo, valor) => setMedios(prev => {
+    const arr = [...prev]; arr[idx] = { ...arr[idx], [campo]: valor }; return arr;
+  });
+  const eliminarMedio = (idx) => setMedios(prev => prev.filter((_, i) => i !== idx));
+
+  const sumaPctMedios = medios.reduce((s, m) => s + (parseFloat(m.porcentaje) || 0), 0);
+  const pctOk = medios.length === 0 || Math.abs(sumaPctMedios - 100) < 0.01;
 
   const handleDelete = async (t) => {
     if (!window.confirm(`¿Eliminar a "${t.nombre}"?`)) return;
@@ -407,6 +443,48 @@ export default function Trabajadores() {
                         className="h-4 w-4" />
                       <label htmlFor="activo-chk" className="text-sm">Activo</label>
                     </div>
+                  </div>
+                </section>
+
+                {/* Medios de pago por defecto */}
+                <section>
+                  <h3 className="text-xs font-semibold uppercase text-muted-foreground mb-2 flex items-center gap-1.5">
+                    <CreditCard size={13}/> Medios de pago por defecto <span className="text-[10px] text-muted-foreground/70 normal-case font-normal">(opcional, auto-cuadre en planilla)</span>
+                  </h3>
+                  <div className="space-y-2">
+                    {medios.map((m, idx) => (
+                      <div key={idx} className="grid grid-cols-12 gap-2 items-center">
+                        <select value={m.cuenta_id}
+                          onChange={e => actualizarMedio(idx, 'cuenta_id', e.target.value)}
+                          className="col-span-8 px-3 py-2 text-sm rounded-md border border-border bg-background">
+                          <option value="">— Cuenta —</option>
+                          {cuentas.map(c => (
+                            <option key={c.id} value={c.id}>{c.nombre}</option>
+                          ))}
+                        </select>
+                        <div className="col-span-3 relative">
+                          <input type="number" step="0.01" min="0" max="100" placeholder="0"
+                            value={m.porcentaje}
+                            onChange={e => actualizarMedio(idx, 'porcentaje', e.target.value)}
+                            className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background font-mono pr-7" />
+                          <span className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">%</span>
+                        </div>
+                        <button type="button" onClick={() => eliminarMedio(idx)}
+                          className="col-span-1 h-9 flex items-center justify-center rounded-md hover:bg-red-500/10 text-red-600">
+                          <Trash2 size={14}/>
+                        </button>
+                      </div>
+                    ))}
+                    <button type="button" onClick={agregarMedio}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-dashed border-border hover:bg-muted">
+                      <Plus size={12}/> Agregar medio
+                    </button>
+                    {medios.length > 0 && (
+                      <div className={`text-xs px-3 py-2 rounded-md border ${pctOk ? 'bg-emerald-500/5 border-emerald-500/20 text-emerald-700' : 'bg-amber-500/5 border-amber-500/20 text-amber-700'}`}>
+                        Total: <strong>{sumaPctMedios.toFixed(2)}%</strong>
+                        {pctOk ? ' ✓ correcto' : ` · faltan ${(100 - sumaPctMedios).toFixed(2)}% para llegar a 100`}
+                      </div>
+                    )}
                   </div>
                 </section>
 

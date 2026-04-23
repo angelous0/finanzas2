@@ -325,6 +325,10 @@ export const updateTrabajador = (id, data) => api.put(`/trabajadores/${id}`, dat
 export const deleteTrabajador = (id) => api.delete(`/trabajadores/${id}`);
 export const previewCalculosTrabajador = (data) => api.post('/trabajadores/calculos-preview', data);
 
+// Medios de pago por defecto por trabajador
+export const getMediosPagoTrabajador = (id) => api.get(`/trabajadores/${id}/medios-pago`);
+export const setMediosPagoTrabajador = (id, medios) => api.put(`/trabajadores/${id}/medios-pago`, medios);
+
 // Adelantos a trabajadores
 export const getAdelantos = (params) => api.get('/adelantos-trabajador', { params });
 export const createAdelanto = (data) => api.post('/adelantos-trabajador', data);
