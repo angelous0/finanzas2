@@ -839,6 +839,14 @@ async def delete_planilla(
     planilla_id: int,
     empresa_id: int = Depends(get_empresa_id),
 ):
+    """
+    Elimina una planilla en CUALQUIER estado.
+    Si está 'pagada', primero revierte los egresos (genera INGRESOS de reversión
+    y restaura saldos) antes de eliminar.
+    Siempre libera los adelantos vinculados.
+
+    TODO (cuando exista sistema de roles): restringir solo a admin.
+    """
     pool = await get_pool()
     async with pool.acquire() as conn:
         async with conn.transaction():
@@ -847,17 +855,43 @@ async def delete_planilla(
                 planilla_id, empresa_id)
             if not pl:
                 raise HTTPException(404, "Planilla no encontrada")
-            if pl['estado'] not in ('borrador', 'anulada'):
-                raise HTTPException(400, "Solo se puede eliminar borrador o anulada")
 
-            # Liberar adelantos vinculados
+            periodo_str = f"{pl['anio']}-{pl['mes']:02d}-Q{pl['quincena']}"
+
+            # Si está pagada, revertir egresos primero
+            if pl['estado'] == 'pagada':
+                pagos = await conn.fetch(
+                    "SELECT * FROM finanzas2.fin_planilla_quincena_pago WHERE planilla_id = $1",
+                    planilla_id)
+                for p in pagos:
+                    # INGRESO reverso
+                    await conn.execute("""
+                        INSERT INTO finanzas2.fin_movimiento_cuenta
+                            (cuenta_id, empresa_id, tipo, monto, descripcion, fecha, referencia_id, referencia_tipo)
+                        VALUES ($1, $2, 'INGRESO', $3, $4, CURRENT_DATE, $5, 'planilla_quincena_delete')
+                    """, p['cuenta_id'], empresa_id, p['monto'],
+                         f"Reversión por eliminación de planilla {periodo_str}", str(planilla_id))
+                    # Restaurar saldo
+                    await conn.execute("""
+                        UPDATE finanzas2.cont_cuenta_financiera
+                           SET saldo_actual = saldo_actual + $1, updated_at = NOW()
+                         WHERE id = $2
+                    """, p['monto'], p['cuenta_id'])
+
+            # Liberar adelantos vinculados (volver a pendientes)
             await conn.execute("""
                 UPDATE finanzas2.fin_adelanto_trabajador
                    SET planilla_id = NULL, detalle_id = NULL, descontado = FALSE, updated_at = NOW()
                  WHERE planilla_id = $1
             """, planilla_id)
 
+            # Eliminar planilla (CASCADE borra detalles y pagos)
             await conn.execute(
                 "DELETE FROM finanzas2.fin_planilla_quincena WHERE id = $1",
                 planilla_id)
-            return {"message": "Planilla eliminada"}
+
+            return {
+                "message": "Planilla eliminada",
+                "estado_previo": pl['estado'],
+                "se_revirtieron_egresos": pl['estado'] == 'pagada',
+            }

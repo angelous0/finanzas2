@@ -40,13 +40,52 @@ export default function PlanillasQuincena() {
   useEffect(() => { load(); }, [load]);
 
   const handleDelete = async (p) => {
-    if (!window.confirm(`¿Eliminar planilla ${p.anio}-${String(p.mes).padStart(2,'0')}-Q${p.quincena}?`)) return;
+    const periodo = `${p.anio}-${String(p.mes).padStart(2,'0')}-Q${p.quincena}`;
+    const fmtMonto = (v) => `S/ ${Number(v || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+    let mensaje;
+    if (p.estado === 'pagada') {
+      mensaje =
+        `⚠️ ATENCIÓN — Planilla PAGADA\n\n` +
+        `Se eliminará la planilla ${periodo}.\n\n` +
+        `Esto ejecutará AUTOMÁTICAMENTE:\n` +
+        `• Reversión de egresos por ${fmtMonto(p.total_neto)} (se generarán INGRESOS en las cuentas)\n` +
+        `• Restauración de saldos de cuentas bancarias\n` +
+        `• Los adelantos vinculados volverán a "Pendiente"\n` +
+        `• Se borrará la planilla y todo su histórico\n\n` +
+        `Esta acción NO se puede deshacer.\n\n` +
+        `¿Continuar?`;
+    } else if (p.estado === 'aprobada') {
+      mensaje =
+        `¿Eliminar planilla ${periodo} (APROBADA)?\n\n` +
+        `• Los adelantos vinculados volverán a "Pendiente"\n` +
+        `• Se borrará la planilla y todos sus detalles\n\n` +
+        `Esta acción NO se puede deshacer.`;
+    } else {
+      mensaje = `¿Eliminar planilla ${periodo} (${p.estado})?\n\nLos adelantos vinculados volverán a "Pendiente".`;
+    }
+
+    if (!window.confirm(mensaje)) return;
+
+    // Doble confirmación si está pagada
+    if (p.estado === 'pagada') {
+      const c2 = window.prompt('Escribe "ELIMINAR" (mayúsculas) para confirmar la eliminación de la planilla pagada:');
+      if (c2 !== 'ELIMINAR') {
+        toast.info('Eliminación cancelada');
+        return;
+      }
+    }
+
     try {
-      await deletePlanillaQuincena(p.id);
-      toast.success('Eliminada');
+      const r = await deletePlanillaQuincena(p.id);
+      if (r.data?.se_revirtieron_egresos) {
+        toast.success('Planilla eliminada y egresos revertidos');
+      } else {
+        toast.success('Planilla eliminada');
+      }
       load();
     } catch (err) {
-      toast.error(typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Error');
+      toast.error(typeof err.response?.data?.detail === 'string' ? err.response.data.detail : 'Error al eliminar');
     }
   };
 
@@ -136,13 +175,12 @@ export default function PlanillasQuincena() {
                         title="Ver">
                         <Eye size={14}/>
                       </button>
-                      {(p.estado === 'borrador' || p.estado === 'anulada') && (
-                        <button onClick={() => handleDelete(p)}
-                          className="h-7 w-7 flex items-center justify-center rounded-md hover:bg-red-500/10 text-red-600"
-                          title="Eliminar">
-                          <Trash2 size={14}/>
-                        </button>
-                      )}
+                      <button onClick={() => handleDelete(p)}
+                        className={`h-7 w-7 flex items-center justify-center rounded-md hover:bg-red-500/10 text-red-600 ${p.estado === 'pagada' ? 'ring-1 ring-red-500/40' : ''}`}
+                        title={p.estado === 'pagada' ? 'Eliminar (revierte egresos automáticamente)' : 'Eliminar'}
+                        data-testid={`delete-planilla-${p.id}`}>
+                        <Trash2 size={14}/>
+                      </button>
                     </div>
                   </td>
                 </tr>
