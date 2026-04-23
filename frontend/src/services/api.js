@@ -325,6 +325,24 @@ export const updateTrabajador = (id, data) => api.put(`/trabajadores/${id}`, dat
 export const deleteTrabajador = (id) => api.delete(`/trabajadores/${id}`);
 export const previewCalculosTrabajador = (data) => api.post('/trabajadores/calculos-preview', data);
 
+// Adelantos a trabajadores
+export const getAdelantos = (params) => api.get('/adelantos', { params });
+export const createAdelanto = (data) => api.post('/adelantos', data);
+export const deleteAdelanto = (id) => api.delete(`/adelantos/${id}`);
+export const getAdelantosPendientesTrabajador = (trabajadorId) =>
+  api.get(`/adelantos/trabajador/${trabajadorId}/pendientes`);
+
+// Planilla Quincena
+export const getPlanillasQuincena = (params) => api.get('/planillas-quincena', { params });
+export const getPlanillaQuincena = (id) => api.get(`/planillas-quincena/${id}`);
+export const calcularPreviewPlanilla = (data) => api.post('/planillas-quincena/calcular', data);
+export const createPlanillaQuincena = (data) => api.post('/planillas-quincena', data);
+export const updatePlanillaQuincena = (id, data) => api.put(`/planillas-quincena/${id}`, data);
+export const aprobarPlanillaQuincena = (id) => api.post(`/planillas-quincena/${id}/aprobar`);
+export const pagarPlanillaQuincena = (id, data) => api.post(`/planillas-quincena/${id}/pagar`, data);
+export const anularPagoPlanillaQuincena = (id) => api.post(`/planillas-quincena/${id}/anular-pago`);
+export const deletePlanillaQuincena = (id) => api.delete(`/planillas-quincena/${id}`);
+
 // Activos Fijos
 export const getActivosFijos = (params) => api.get('/activos-fijos', { params });
 export const getActivoFijo = (id) => api.get(`/activos-fijos/${id}`);

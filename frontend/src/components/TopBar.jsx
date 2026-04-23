@@ -23,6 +23,8 @@ const PAGE_TITLES = {
   '/valorizacion-inventario': 'Valorizacion de Inventario',
   '/trabajadores': 'Trabajadores',
   '/ajustes-planilla': 'Ajustes de Planilla',
+  '/adelantos': 'Adelantos a Trabajadores',
+  '/planillas-quincena': 'Planillas Quincenales',
   '/produccion-interna': 'Producción Interna',
   '/unidades-internas': 'Producción Interna',
   '/cargos-internos': 'Producción Interna',

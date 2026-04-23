@@ -79,6 +79,8 @@ const navSections = [
     dot: 'bg-cyan-500',
     items: [
       { icon: Users, label: 'Trabajadores', path: '/trabajadores' },
+      { icon: FileSpreadsheet, label: 'Planillas Quincena', path: '/planillas-quincena' },
+      { icon: Clock, label: 'Adelantos', path: '/adelantos' },
       { icon: Settings, label: 'Ajustes Planilla', path: '/ajustes-planilla' },
     ]
   },

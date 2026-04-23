@@ -42,6 +42,9 @@ import { HistorialConciliaciones } from './pages/HistorialConciliaciones';
 // === Planilla v3 (reset) ===
 import Trabajadores from './pages/Trabajadores';
 import AjustesPlanilla from './pages/AjustesPlanilla';
+import Adelantos from './pages/Adelantos';
+import PlanillasQuincena from './pages/PlanillasQuincena';
+import PlanillaQuincenaWizard from './pages/PlanillaQuincenaWizard';
 
 // === Activos Fijos ===
 import ActivosFijos from './pages/ActivosFijos';
@@ -154,6 +157,10 @@ function AppRoutes() {
         <Route path="/reporte-pnl-unidad/:id" element={<PnLUnidadInterna />} />
         <Route path="/trabajadores" element={<Trabajadores />} />
         <Route path="/ajustes-planilla" element={<AjustesPlanilla />} />
+        <Route path="/adelantos" element={<Adelantos />} />
+        <Route path="/planillas-quincena" element={<PlanillasQuincena />} />
+        <Route path="/planillas-quincena/nueva" element={<PlanillaQuincenaWizard />} />
+        <Route path="/planillas-quincena/:id" element={<PlanillaQuincenaWizard />} />
         <Route path="/activos-fijos" element={<ActivosFijos />} />
       </Routes>
     </div>
