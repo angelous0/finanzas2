@@ -307,7 +307,23 @@ export const deleteGastoUnidadInterna = (id) => api.delete(`/gastos-unidad-inter
 export const getTiposGastoUnidad = () => api.get('/tipos-gasto-unidad');
 export const getReporteUnidadesInternas = (params) => api.get('/reporte-unidades-internas', { params });
 
-// Planilla + Trabajadores: eliminados en [planilla-reset], se rehace desde cero
+// ─── Planilla v3 ─────────────────────────────────────────────
+// Ajustes
+export const getAjustesPlanilla = () => api.get('/ajustes-planilla');
+export const updateAjustesPlanilla = (data) => api.put('/ajustes-planilla', data);
+
+// AFP
+export const getAfps = (params) => api.get('/afp', { params });
+export const getAfp = (id) => api.get(`/afp/${id}`);
+export const updateAfp = (id, data) => api.put(`/afp/${id}`, data);
+
+// Trabajadores
+export const getTrabajadores = (params) => api.get('/trabajadores', { params });
+export const getTrabajador = (id) => api.get(`/trabajadores/${id}`);
+export const createTrabajador = (data) => api.post('/trabajadores', data);
+export const updateTrabajador = (id, data) => api.put(`/trabajadores/${id}`, data);
+export const deleteTrabajador = (id) => api.delete(`/trabajadores/${id}`);
+export const previewCalculosTrabajador = (data) => api.post('/trabajadores/calculos-preview', data);
 
 // Activos Fijos
 export const getActivosFijos = (params) => api.get('/activos-fijos', { params });

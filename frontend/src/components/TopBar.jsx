@@ -21,6 +21,8 @@ const PAGE_TITLES = {
   '/reportes-financieros': 'Reportes Financieros',
   '/libro-analitico': 'Libro Analitico',
   '/valorizacion-inventario': 'Valorizacion de Inventario',
+  '/trabajadores': 'Trabajadores',
+  '/ajustes-planilla': 'Ajustes de Planilla',
   '/produccion-interna': 'Producción Interna',
   '/unidades-internas': 'Producción Interna',
   '/cargos-internos': 'Producción Interna',

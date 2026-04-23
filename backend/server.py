@@ -37,7 +37,10 @@ from routers.libro_analitico import router as libro_analitico_router
 from routers.unidades_internas import router as unidades_internas_router
 from routers.activos_fijos import router as activos_fijos_router
 from routers.movimientos_produccion import router as movimientos_produccion_router
-# Planilla + Trabajadores: eliminados en [planilla-reset], se rehace desde cero
+# Planilla v3 (reset): trabajadores + ajustes + AFP
+from routers.ajustes_planilla import router as ajustes_planilla_router
+from routers.afp import router as afp_router
+from routers.trabajadores import router as trabajadores_router
 
 # LEGACY routers — desregistrados en Fase 2 (archivos conservados para /legacy/ futuro):
 # from routers.planillas import router as planillas_router
@@ -95,7 +98,10 @@ api_router.include_router(reportes_simplificados_router)
 api_router.include_router(reportes_linea_router)
 api_router.include_router(libro_analitico_router)
 api_router.include_router(unidades_internas_router)
-# planilla_router y trabajadores_router: eliminados en [planilla-reset]
+# Planilla v3
+api_router.include_router(ajustes_planilla_router)
+api_router.include_router(afp_router)
+api_router.include_router(trabajadores_router)
 api_router.include_router(activos_fijos_router)
 api_router.include_router(movimientos_produccion_router)
 

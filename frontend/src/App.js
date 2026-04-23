@@ -39,7 +39,9 @@ import Letras from './pages/Letras';
 import ConciliacionBancaria from './pages/ConciliacionBancaria';
 import { HistorialConciliaciones } from './pages/HistorialConciliaciones';
 
-// === Planilla === eliminado en [planilla-reset], se rehace desde cero
+// === Planilla v3 (reset) ===
+import Trabajadores from './pages/Trabajadores';
+import AjustesPlanilla from './pages/AjustesPlanilla';
 
 // === Activos Fijos ===
 import ActivosFijos from './pages/ActivosFijos';
@@ -150,7 +152,8 @@ function AppRoutes() {
         {/* Detalle: kardex y P&L siguen como páginas independientes */}
         <Route path="/cuentas-internas/:id/kardex" element={<KardexCuentaInterna />} />
         <Route path="/reporte-pnl-unidad/:id" element={<PnLUnidadInterna />} />
-        {/* /planilla y /trabajadores: eliminados en [planilla-reset] */}
+        <Route path="/trabajadores" element={<Trabajadores />} />
+        <Route path="/ajustes-planilla" element={<AjustesPlanilla />} />
         <Route path="/activos-fijos" element={<ActivosFijos />} />
       </Routes>
     </div>

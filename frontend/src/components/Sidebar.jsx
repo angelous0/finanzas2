@@ -8,7 +8,7 @@ import {
   Tag, Package, FileSpreadsheet,
   Vault, Layers, Link2, History, BookOpen, PieChart,
   Factory, ArrowRightLeft, FileText, BarChart3, ClipboardList,
-  TrendingUp, Menu, ChevronsLeft, ChevronsRight
+  TrendingUp, Menu, ChevronsLeft, ChevronsRight, Settings
 } from 'lucide-react';
 import { useEmpresa } from '../context/EmpresaContext';
 
@@ -73,7 +73,15 @@ const navSections = [
       { icon: Factory, label: 'Producción Interna', path: '/produccion-interna' },
     ]
   },
-  // Grupo 'planilla' eliminado en [planilla-reset], se rehace desde cero
+  {
+    key: 'planilla',
+    title: 'Planilla',
+    dot: 'bg-cyan-500',
+    items: [
+      { icon: Users, label: 'Trabajadores', path: '/trabajadores' },
+      { icon: Settings, label: 'Ajustes Planilla', path: '/ajustes-planilla' },
+    ]
+  },
   {
     key: 'activos',
     title: 'Activos',
