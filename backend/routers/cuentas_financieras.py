@@ -321,6 +321,23 @@ async def resumen_cuentas_internas(
             """, cid, empresa_id, primer_dia, ultimo_dia)
             ingresos = float(movs['ingresos'])
             egresos = float(movs['egresos'])
+
+            # 📋 CxC virtual = cargos con estado 'generado' (NIs pendientes) de esta unidad
+            cxc = await conn.fetchrow("""
+                SELECT
+                    COALESCE(SUM(ci.importe), 0) AS total_pendiente,
+                    COUNT(*) AS cargos_pendientes,
+                    COUNT(DISTINCT mp.factura_id) FILTER (WHERE mp.factura_numero LIKE 'NI-%') AS nis_pendientes
+                FROM finanzas2.fin_cargo_interno ci
+                LEFT JOIN produccion.prod_movimientos_produccion mp ON mp.id::text = ci.movimiento_id
+                WHERE ci.unidad_interna_id = $1
+                  AND ci.estado = 'generado'
+                  AND ci.empresa_id = $2
+            """, c['unidad_interna_id'], empresa_id)
+
+            cxc_virtual = float(cxc['total_pendiente'] or 0)
+            potencial = float(c['saldo_actual'] or 0) + cxc_virtual
+
             resultado.append({
                 "cuenta_id": cid,
                 "nombre": c['nombre'],
@@ -331,15 +348,23 @@ async def resumen_cuentas_internas(
                 "ingresos_mes": round(ingresos, 2),
                 "gastos_mes": round(egresos, 2),
                 "resultado_mes": round(ingresos - egresos, 2),
+                "cxc_virtual": round(cxc_virtual, 2),
+                "cxc_cargos_pendientes": int(cxc['cargos_pendientes'] or 0),
+                "cxc_nis_pendientes": int(cxc['nis_pendientes'] or 0),
+                "potencial": round(potencial, 2),
             })
 
         total_saldo = sum(r['saldo_actual'] for r in resultado)
+        total_cxc = sum(r['cxc_virtual'] for r in resultado)
+        total_potencial = sum(r['potencial'] for r in resultado)
         mayor = max(resultado, key=lambda x: x['saldo_actual']) if resultado else None
         deficit = min(resultado, key=lambda x: x['saldo_actual']) if resultado else None
 
         return {
             "periodo": f"{year}-{month:02d}",
             "total_saldo": round(total_saldo, 2),
+            "total_cxc_virtual": round(total_cxc, 2),
+            "total_potencial": round(total_potencial, 2),
             "mayor_saldo": {"nombre": mayor['unidad_nombre'], "saldo": mayor['saldo_actual']} if mayor else None,
             "menor_saldo": {"nombre": deficit['unidad_nombre'], "saldo": deficit['saldo_actual']} if deficit else None,
             "cuentas": resultado,

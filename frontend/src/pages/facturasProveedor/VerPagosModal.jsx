@@ -40,7 +40,7 @@ const VerPagosModal = ({ show, factura, onClose, onDataChanged }) => {
       onDataChanged();
     } catch (error) {
       console.error('Error anulando pago:', error);
-      toast.error(error.response?.data?.detail || 'Error al anular pago');
+      toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error al anular pago');
     }
   };
 

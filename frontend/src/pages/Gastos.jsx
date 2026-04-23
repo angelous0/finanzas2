@@ -348,7 +348,7 @@ export default function Gastos() {
       setSaldoPendiente(g.saldo_pendiente || 0);
       loadData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Error eliminando pago');
+      toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error eliminando pago');
     }
   };
 
@@ -427,7 +427,7 @@ export default function Gastos() {
       resetForm();
       loadData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Error al guardar gasto');
+      toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error al guardar gasto');
     } finally {
       setSubmitting(false);
     }
@@ -492,7 +492,7 @@ export default function Gastos() {
       toast.success('Gasto eliminado exitosamente');
       loadData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Error al eliminar gasto');
+      toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error al eliminar gasto');
     }
   };
 

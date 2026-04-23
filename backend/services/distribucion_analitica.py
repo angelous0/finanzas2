@@ -22,11 +22,13 @@ async def crear_distribucion_ingreso(conn, empresa_id: int, odoo_order_id: int, 
         return 0
 
     lineas = await conn.fetch("""
-        SELECT l.odoo_linea_negocio_id, COALESCE(SUM(l.price_subtotal), 0) as subtotal
+        SELECT COALESCE(l.linea_negocio_id, l.odoo_linea_negocio_id) AS linea_id_efectiva,
+               l.odoo_linea_negocio_id,
+               COALESCE(SUM(l.price_subtotal), 0) as subtotal
         FROM finanzas2.cont_venta_pos_linea l
         JOIN finanzas2.cont_venta_pos v ON l.venta_pos_id = v.id
         WHERE v.odoo_id = $1
-        GROUP BY l.odoo_linea_negocio_id
+        GROUP BY COALESCE(l.linea_negocio_id, l.odoo_linea_negocio_id), l.odoo_linea_negocio_id
         HAVING SUM(l.price_subtotal) > 0
     """, odoo_order_id)
 
@@ -41,7 +43,13 @@ async def crear_distribucion_ingreso(conn, empresa_id: int, odoo_order_id: int, 
     count = 0
     restante = float(amount_total)
     for i, r in enumerate(lineas):
-        mapped = resolve_linea(ln_map, r['odoo_linea_negocio_id'])
+        # Si ya tenemos id de línea efectiva (desde Producción), usarlo directo;
+        # si no, caer al mapeo legacy por odoo_linea_negocio_id.
+        if r['linea_id_efectiva']:
+            linea_id = r['linea_id_efectiva']
+        else:
+            mapped = resolve_linea(ln_map, r['odoo_linea_negocio_id'])
+            linea_id = mapped['id']
         if i == len(lineas) - 1:
             monto = round(restante, 2)
         else:
@@ -53,7 +61,7 @@ async def crear_distribucion_ingreso(conn, empresa_id: int, odoo_order_id: int, 
                 INSERT INTO finanzas2.cont_distribucion_analitica
                     (empresa_id, origen_tipo, origen_id, linea_negocio_id, monto, fecha)
                 VALUES ($1, 'venta_pos_ingreso', $2, $3, $4, $5)
-            """, empresa_id, odoo_order_id, mapped['id'], monto, fecha)
+            """, empresa_id, odoo_order_id, linea_id, monto, fecha)
             count += 1
     return count
 
@@ -62,11 +70,13 @@ async def crear_distribucion_cobro(conn, empresa_id: int, odoo_order_id: int,
                                     abono_id: int, monto_cobro: float, fecha):
     """Crea distribución analítica de cobro prorrateada por línea de negocio."""
     lineas = await conn.fetch("""
-        SELECT l.odoo_linea_negocio_id, COALESCE(SUM(l.price_subtotal), 0) as subtotal
+        SELECT COALESCE(l.linea_negocio_id, l.odoo_linea_negocio_id) AS linea_id_efectiva,
+               l.odoo_linea_negocio_id,
+               COALESCE(SUM(l.price_subtotal), 0) as subtotal
         FROM finanzas2.cont_venta_pos_linea l
         JOIN finanzas2.cont_venta_pos v ON l.venta_pos_id = v.id
         WHERE v.odoo_id = $1
-        GROUP BY l.odoo_linea_negocio_id
+        GROUP BY COALESCE(l.linea_negocio_id, l.odoo_linea_negocio_id), l.odoo_linea_negocio_id
         HAVING SUM(l.price_subtotal) > 0
     """, odoo_order_id)
 
@@ -81,7 +91,11 @@ async def crear_distribucion_cobro(conn, empresa_id: int, odoo_order_id: int,
     count = 0
     restante = float(monto_cobro)
     for i, r in enumerate(lineas):
-        mapped = resolve_linea(ln_map, r['odoo_linea_negocio_id'])
+        if r['linea_id_efectiva']:
+            linea_id = r['linea_id_efectiva']
+        else:
+            mapped = resolve_linea(ln_map, r['odoo_linea_negocio_id'])
+            linea_id = mapped['id']
         if i == len(lineas) - 1:
             monto_linea = round(restante, 2)
         else:
@@ -93,7 +107,7 @@ async def crear_distribucion_cobro(conn, empresa_id: int, odoo_order_id: int,
                 INSERT INTO finanzas2.cont_distribucion_analitica
                     (empresa_id, origen_tipo, origen_id, linea_negocio_id, monto, fecha)
                 VALUES ($1, 'cobranza_cxc', $2, $3, $4, $5)
-            """, empresa_id, abono_id, mapped['id'], monto_linea, fecha)
+            """, empresa_id, abono_id, linea_id, monto_linea, fecha)
             count += 1
     return count
 

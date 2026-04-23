@@ -4,7 +4,7 @@
 
 export const formatCurrency = (value, symbol = 'S/') => {
   const s = symbol || 'S/';
-  return `${s} ${Number(value || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}`;
+  return `${s} ${Number(value || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
 export const formatDate = (dateStr) => {

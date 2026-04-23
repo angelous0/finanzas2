@@ -63,9 +63,6 @@ const navSections = [
       { icon: PieChart, label: 'Reportes Financieros', path: '/reportes-financieros' },
       { icon: BookOpen, label: 'Libro Analitico', path: '/libro-analitico' },
       { icon: Package, label: 'Valorizacion Inventario', path: '/valorizacion-inventario' },
-      { icon: TrendingUp, label: 'Flujo de Caja', path: '/flujo-caja' },
-      { icon: DollarSign, label: 'Rentabilidad por Linea', path: '/rentabilidad-linea' },
-      { icon: BarChart3, label: 'Reportes Simplificados', path: '/reportes-simplificados' },
     ]
   },
   {
@@ -73,22 +70,10 @@ const navSections = [
     title: 'Produccion Interna',
     dot: 'bg-amber-500',
     items: [
-      { icon: Factory, label: 'Unidades Internas', path: '/unidades-internas' },
-      { icon: ArrowRightLeft, label: 'Cargos Internos', path: '/cargos-internos' },
-      { icon: FileText, label: 'Gastos Unidad', path: '/gastos-unidad-interna' },
-      { icon: BarChart3, label: 'Reporte Gerencial', path: '/reporte-unidades-internas' },
-      { icon: Wallet, label: 'Cuentas Internas', path: '/cuentas-internas' },
-      { icon: ArrowRightLeft, label: 'Movimientos Producción', path: '/movimientos-produccion' },
+      { icon: Factory, label: 'Producción Interna', path: '/produccion-interna' },
     ]
   },
-  {
-    key: 'planilla',
-    title: 'Planilla',
-    dot: 'bg-cyan-500',
-    items: [
-      { icon: ClipboardList, label: 'Planilla', path: '/planilla' },
-    ]
-  },
+  // Grupo 'planilla' eliminado en [planilla-reset], se rehace desde cero
   {
     key: 'activos',
     title: 'Activos',
@@ -107,7 +92,6 @@ const navSections = [
       { icon: Target, label: 'Centros de Costo', path: '/centros-costo' },
       { icon: Tags, label: 'Categorias', path: '/categorias-gasto' },
       { icon: Users, label: 'Proveedores', path: '/proveedores' },
-      { icon: Users, label: 'Clientes', path: '/clientes' },
       { icon: Building2, label: 'Empresas', path: '/empresas' },
     ]
   },

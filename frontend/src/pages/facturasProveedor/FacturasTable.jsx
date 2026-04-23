@@ -1,15 +1,16 @@
 import React from 'react';
 import { formatCurrency, formatDate, estadoBadge } from './helpers';
-import { Plus, Trash2, Search, X, FileText, Edit2, Eye, DollarSign, FileSpreadsheet, History, Download, Link2, MoreVertical } from 'lucide-react';
+import { Plus, Trash2, Search, X, FileText, Edit2, Eye, DollarSign, FileSpreadsheet, History, Download, Link2, MoreVertical, CheckCircle2, RotateCcw, Factory } from 'lucide-react';
 import { toast } from 'sonner';
 import SearchableSelect from '../../components/SearchableSelect';
+import { procesarNotaInterna, anularProcesamientoNotaInterna } from '../../services/api';
 
 const FacturasTable = ({
   facturas, loading, proveedores,
   filtroNumero, setFiltroNumero, filtroProveedorId, setFiltroProveedorId,
   filtroFecha, setFiltroFecha, filtroEstado, setFiltroEstado,
   onOpenPago, onOpenLetras, onVerPagos, onVerLetras, onView, onEdit, onDelete, onDownloadPDF,
-  onNewFactura, onVincularIngresos
+  onNewFactura, onVincularIngresos, onRefresh,
 }) => {
   const [openMenu, setOpenMenu] = React.useState(null);
 
@@ -113,20 +114,59 @@ const FacturasTable = ({
                   const estaCanjeado = factura.estado === 'canjeado';
                   const isMenuOpen = openMenu === factura.id;
 
+                  const esNotaInterna = factura.tipo_documento === 'nota_interna';
+                  const niPendiente = esNotaInterna && factura.estado === 'pendiente';
+                  const niProcesada = esNotaInterna && factura.estado === 'pagado';
+
+                  const handleProcesarNI = async () => {
+                    try {
+                      const res = await procesarNotaInterna(factura.id);
+                      toast.success(res.data?.message || 'Procesada');
+                      onRefresh?.();
+                    } catch (e) {
+                      toast.error(e.response?.data?.detail || 'Error al procesar');
+                    }
+                  };
+                  const handleAnularProcesamiento = async () => {
+                    if (!window.confirm('¿Revertir el procesamiento de esta Nota Interna?')) return;
+                    try {
+                      const res = await anularProcesamientoNotaInterna(factura.id);
+                      toast.success(res.data?.message || 'Revertida');
+                      onRefresh?.();
+                    } catch (e) {
+                      toast.error(e.response?.data?.detail || 'Error al anular');
+                    }
+                  };
+
                   // Build menu items dynamically
                   const menuItems = [];
-                  if (puedePagar && !estaCanjeado) menuItems.push({ label: 'Registrar Pago', icon: DollarSign, color: '#059669', action: () => onOpenPago(factura), testId: `pagar-factura-${factura.id}` });
-                  if (puedeGenerarLetras) menuItems.push({ label: 'Canjear por Letras', icon: FileSpreadsheet, color: '#2563eb', action: () => onOpenLetras(factura), testId: `letras-factura-${factura.id}` });
+                  if (niPendiente) menuItems.push({ label: '✓ Procesar NI', icon: CheckCircle2, color: '#059669', action: handleProcesarNI, testId: `procesar-ni-${factura.id}` });
+                  if (niProcesada) menuItems.push({ label: '↻ Anular procesamiento', icon: RotateCcw, color: '#d97706', action: handleAnularProcesamiento, testId: `anular-ni-${factura.id}` });
+                  if (puedePagar && !estaCanjeado && !esNotaInterna) menuItems.push({ label: 'Registrar Pago', icon: DollarSign, color: '#059669', action: () => onOpenPago(factura), testId: `pagar-factura-${factura.id}` });
+                  if (puedeGenerarLetras && !esNotaInterna) menuItems.push({ label: 'Canjear por Letras', icon: FileSpreadsheet, color: '#2563eb', action: () => onOpenLetras(factura), testId: `letras-factura-${factura.id}` });
                   if (estaCanjeado) menuItems.push({ label: 'Ver Letras', icon: FileSpreadsheet, color: 'var(--muted)', action: () => onVerLetras(factura), testId: `ver-letras-${factura.id}` });
-                  if (tienePagos && !estaCanjeado) menuItems.push({ label: 'Ver Pagos', icon: History, color: 'var(--muted)', action: () => onVerPagos(factura), testId: `ver-pagos-${factura.id}` });
-                  menuItems.push({ label: 'Vincular Ingresos', icon: Link2, color: 'var(--muted)', action: () => onVincularIngresos(factura), testId: `vincular-ingresos-${factura.id}` });
-                  if (factura.estado === 'pendiente') menuItems.push({ label: 'Eliminar', icon: Trash2, color: 'var(--danger-text)', action: () => onDelete(factura.id), testId: `delete-factura-${factura.id}` });
+                  if (tienePagos && !estaCanjeado && !esNotaInterna) menuItems.push({ label: 'Ver Pagos', icon: History, color: 'var(--muted)', action: () => onVerPagos(factura), testId: `ver-pagos-${factura.id}` });
+                  if (!esNotaInterna) menuItems.push({ label: 'Vincular Ingresos', icon: Link2, color: 'var(--muted)', action: () => onVincularIngresos(factura), testId: `vincular-ingresos-${factura.id}` });
+                  if (factura.estado === 'pendiente' || niProcesada) menuItems.push({ label: 'Eliminar', icon: Trash2, color: 'var(--danger-text)', action: () => onDelete(factura.id), testId: `delete-factura-${factura.id}` });
 
                   return (
                     <tr key={factura.id} data-testid={`factura-row-${factura.id}`}>
                       <td>{formatDate(factura.fecha_factura)}</td>
-                      <td style={{ fontWeight: 500, fontFamily: "'JetBrains Mono', monospace" }}>{factura.numero}</td>
-                      <td>{factura.proveedor_nombre || factura.beneficiario_nombre || '-'}</td>
+                      <td style={{ fontWeight: 500, fontFamily: "'JetBrains Mono', monospace" }}>
+                        {factura.numero}
+                        {factura.tipo_documento === 'nota_interna' && (
+                          <span style={{ display: 'inline-block', marginLeft: '6px', background: '#fef3c7', color: '#b45309', padding: '1px 6px', borderRadius: '4px', fontSize: '0.65rem', fontWeight: 600, verticalAlign: 'middle' }} title="Nota Interna (producción propia)">
+                            🏭 Interna
+                          </span>
+                        )}
+                      </td>
+                      <td>
+                        {factura.tipo_documento === 'nota_interna'
+                          ? (factura.unidad_interna_nombre
+                              ? <span style={{ color: '#b45309', fontWeight: 500 }}>{factura.unidad_interna_nombre}</span>
+                              : <span style={{ color: 'var(--muted)', fontStyle: 'italic' }}>— sin unidad —</span>)
+                          : (factura.proveedor_nombre || factura.beneficiario_nombre || '-')}
+                      </td>
                       <td className="text-right" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
                         {formatCurrency(total, factura.moneda_simbolo)}
                       </td>
@@ -138,9 +178,21 @@ const FacturasTable = ({
                         ) : formatCurrency(pagado, factura.moneda_simbolo)}
                       </td>
                       <td>
-                        <span className={estadoBadge(factura.estado)} style={{ cursor: estaCanjeado ? 'pointer' : 'default' }} onClick={() => estaCanjeado && onVerLetras(factura)} title={estaCanjeado ? 'Ver letras vinculadas' : ''}>
-                          {factura.estado}
-                        </span>
+                        {esNotaInterna ? (
+                          niProcesada ? (
+                            <span style={{ background: '#dcfce7', color: '#15803d', padding: '3px 8px', borderRadius: 6, fontSize: '0.7rem', fontWeight: 700 }}>
+                              ✓ Procesada
+                            </span>
+                          ) : (
+                            <span style={{ background: '#fef3c7', color: '#b45309', padding: '3px 8px', borderRadius: 6, fontSize: '0.7rem', fontWeight: 700 }}>
+                              📋 CxC Virtual
+                            </span>
+                          )
+                        ) : (
+                          <span className={estadoBadge(factura.estado)} style={{ cursor: estaCanjeado ? 'pointer' : 'default' }} onClick={() => estaCanjeado && onVerLetras(factura)} title={estaCanjeado ? 'Ver letras vinculadas' : ''}>
+                            {factura.estado}
+                          </span>
+                        )}
                       </td>
                       <td className="text-center">
                         {(() => {

@@ -5,7 +5,7 @@ import { Plus, Trash2, Edit2, Landmark, X, RefreshCw, FileText, ArrowUpCircle, A
 import { toast } from 'sonner';
 
 const formatCurrency = (value, symbol = 'S/') => {
-  return `${symbol} ${Number(value || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}`;
+  return `${symbol} ${Number(value || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
 export const CuentasBancarias = () => {

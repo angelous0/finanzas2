@@ -68,13 +68,14 @@ async def resumen_activos(empresa_id: int = Depends(get_empresa_id)):
             WHERE empresa_id = $1
         """, empresa_id)
 
-        # Depreciacion del mes actual
+        # Depreciacion del mes actual — solo activos vigentes (no en baja)
         periodo_actual = date.today().strftime("%Y-%m")
         dep_mes = await conn.fetchval("""
             SELECT COALESCE(SUM(d.valor_depreciacion), 0)
             FROM finanzas2.fin_depreciacion_activo d
             JOIN finanzas2.fin_activo_fijo a ON d.activo_id = a.id
             WHERE a.empresa_id = $1 AND d.periodo = $2
+              AND a.estado = 'activo'
         """, empresa_id, periodo_actual)
 
         return {
@@ -120,7 +121,7 @@ async def list_activos(
                    ln.nombre AS linea_negocio_nombre,
                    COALESCE(dep.total_dep, 0) AS depreciacion_acumulada,
                    a.valor_adquisicion - COALESCE(dep.total_dep, 0) AS valor_libro,
-                   CASE WHEN a.vida_util_anios > 0 AND a.valor_adquisicion > 0
+                   CASE WHEN a.estado = 'activo' AND a.vida_util_anios > 0 AND a.valor_adquisicion > 0
                         THEN (a.valor_adquisicion - COALESCE(a.valor_residual, 0)) / (a.vida_util_anios * 12.0)
                         ELSE 0 END AS dep_mensual
             FROM finanzas2.fin_activo_fijo a

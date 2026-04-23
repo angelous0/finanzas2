@@ -209,6 +209,7 @@ async def get_lineas_venta_pos(order_id: int, empresa_id: int = Depends(get_empr
             SELECT l.id, l.product_id, l.product_name, l.product_code,
                    l.qty, l.price_unit, l.discount, l.price_subtotal, l.price_subtotal_incl,
                    l.marca, l.tipo,
+                   l.linea_negocio_id, l.linea_negocio_nombre,
                    l.odoo_linea_negocio_id, l.odoo_linea_negocio_nombre
             FROM finanzas2.cont_venta_pos_linea l
             JOIN finanzas2.cont_venta_pos v ON l.venta_pos_id = v.id
@@ -224,7 +225,15 @@ async def get_lineas_venta_pos(order_id: int, empresa_id: int = Depends(get_empr
 
         result = []
         for r in rows:
-            mapped = resolve_linea(ln_map, r['odoo_linea_negocio_id'])
+            # Preferir la línea efectiva (desde Producción) si existe,
+            # si no, caer al resolve por odoo_linea_negocio_id (legacy).
+            if r['linea_negocio_id']:
+                linea_id = r['linea_negocio_id']
+                linea_nombre = r['linea_negocio_nombre']
+            else:
+                mapped = resolve_linea(ln_map, r['odoo_linea_negocio_id'])
+                linea_id = mapped['id']
+                linea_nombre = mapped['nombre']
             result.append({
                 "id": r['id'],
                 "product_id": r['product_id'],
@@ -237,8 +246,8 @@ async def get_lineas_venta_pos(order_id: int, empresa_id: int = Depends(get_empr
                 "price_subtotal_incl": float(r['price_subtotal_incl'] or 0),
                 "marca": r['marca'],
                 "tipo": r['tipo'],
-                "linea_negocio_id": mapped['id'],
-                "linea_negocio_nombre": mapped['nombre'],
+                "linea_negocio_id": linea_id,
+                "linea_negocio_nombre": linea_nombre,
                 "odoo_linea_negocio_id": r['odoo_linea_negocio_id'],
             })
         return result

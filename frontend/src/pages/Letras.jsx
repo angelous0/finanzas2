@@ -8,7 +8,7 @@ import { Plus, Trash2, DollarSign, FileText, X, CreditCard, Search, Hash } from 
 import { toast } from 'sonner';
 
 const formatCurrency = (value, symbol = 'S/') => {
-  return `${symbol} ${Number(value || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}`;
+  return `${symbol} ${Number(value || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
 const formatDate = (dateStr) => {
@@ -108,7 +108,7 @@ export const Letras = () => {
       setGenerarForm({ factura_id: '', cantidad_letras: 3, monto_por_letra: '', dias_entre_letras: 30 });
       loadData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Error al generar letras');
+      toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error al generar letras');
     } finally {
       setSubmitting(false);
     }
@@ -145,7 +145,7 @@ export const Letras = () => {
       setPagarForm({ cuenta_financiera_id: '', monto: 0, medio_pago: 'transferencia', referencia: '' });
       loadData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Error al pagar letra');
+      toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error al pagar letra');
     } finally {
       setSubmitting(false);
     }
@@ -158,7 +158,7 @@ export const Letras = () => {
       toast.success('Letra eliminada');
       loadData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Error al eliminar letra');
+      toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error al eliminar letra');
     }
   };
 
@@ -190,7 +190,7 @@ export const Letras = () => {
       setLetraParaNumero(null);
       loadData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Error al actualizar');
+      toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error al actualizar');
     } finally {
       setSubmitting(false);
     }

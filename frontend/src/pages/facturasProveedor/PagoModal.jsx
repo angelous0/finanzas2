@@ -75,7 +75,7 @@ const PagoModal = ({ show, factura, cuentasFinancieras, onClose, onPagoRegistrad
       onPagoRegistrado();
     } catch (error) {
       console.error('Error registrando pago:', error);
-      toast.error(error.response?.data?.detail || 'Error al registrar pago');
+      toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error al registrar pago');
     } finally {
       setRegistrando(false);
     }

@@ -72,9 +72,14 @@ const FacturaFormModal = ({
       notas: factura.notas || '',
       lineas: (() => {
         const catLines = (factura.lineas || []).filter(l => !l.articulo_id && !l.servicio_id);
-        return catLines.length > 0
-          ? catLines.map(l => ({ id: l.id, categoria_id: l.categoria_id || '', descripcion: l.descripcion || '', linea_negocio_id: l.linea_negocio_id || '', centro_costo_id: l.centro_costo_id || '', unidad_interna_id: l.unidad_interna_id || '', importe: l.importe || 0, igv_aplica: l.igv_aplica !== false, movimiento_id: '' }))
-          : [getEmptyLinea()];
+        const artLines = (factura.lineas || []).filter(l => l.articulo_id || l.servicio_id);
+        if (catLines.length > 0) {
+          return catLines.map(l => ({ id: l.id, categoria_id: l.categoria_id || '', descripcion: l.descripcion || '', linea_negocio_id: l.linea_negocio_id || '', centro_costo_id: l.centro_costo_id || '', unidad_interna_id: l.unidad_interna_id || '', importe: l.importe || 0, igv_aplica: l.igv_aplica !== false, movimiento_id: '' }));
+        }
+        // Si la factura ya tiene líneas de artículo/servicio, no metemos una línea de
+        // categoría vacía por defecto; la sección queda limpia hasta que el usuario
+        // haga click en "Agregar línea" si realmente necesita una categoría adicional.
+        return artLines.length > 0 ? [] : [getEmptyLinea()];
       })(),
       articulos: (() => {
         const artLines = (factura.lineas || []).filter(l => l.articulo_id || l.servicio_id);
@@ -123,7 +128,7 @@ const FacturaFormModal = ({
 
   // Line handlers
   const handleAddLinea = () => setFormData(prev => ({ ...prev, lineas: [...prev.lineas, getEmptyLinea()] }));
-  const handleRemoveLinea = (index) => { if (formData.lineas.length > 1) setFormData(prev => ({ ...prev, lineas: prev.lineas.filter((_, i) => i !== index) })); };
+  const handleRemoveLinea = (index) => setFormData(prev => ({ ...prev, lineas: prev.lineas.filter((_, i) => i !== index) }));
   const handleDuplicateLinea = (index) => setFormData(prev => ({ ...prev, lineas: [...prev.lineas.slice(0, index + 1), { ...prev.lineas[index] }, ...prev.lineas.slice(index + 1)] }));
   const handleLineaChange = (index, field, value) => {
     setFormData(prev => ({
@@ -228,18 +233,22 @@ const FacturaFormModal = ({
         fecha_contable: formData.fecha_contable || formData.fecha_factura || null,
         fecha_vencimiento: formData.fecha_vencimiento || null,
         lineas: [
-          ...formData.lineas.map(l => {
-            // eslint-disable-next-line no-unused-vars
-            const { movimiento_id, ...rest } = l;
-            return {
-              ...rest,
-              categoria_id: l.categoria_id ? parseInt(l.categoria_id) : null,
-              linea_negocio_id: l.linea_negocio_id ? parseInt(l.linea_negocio_id) : null,
-              centro_costo_id: l.centro_costo_id ? parseInt(l.centro_costo_id) : null,
-              unidad_interna_id: l.unidad_interna_id ? parseInt(l.unidad_interna_id) : null,
-              importe: parseFloat(l.importe) || 0
-            };
-          }),
+          ...formData.lineas
+            // Descartar líneas vacías (sin categoría y sin importe) para no enviar
+            // basura al backend cuando el usuario no llenó nada en esta sección.
+            .filter(l => l.categoria_id || (parseFloat(l.importe) || 0) > 0 || (l.descripcion || '').trim())
+            .map(l => {
+              // eslint-disable-next-line no-unused-vars
+              const { movimiento_id, ...rest } = l;
+              return {
+                ...rest,
+                categoria_id: l.categoria_id ? parseInt(l.categoria_id) : null,
+                linea_negocio_id: l.linea_negocio_id ? parseInt(l.linea_negocio_id) : null,
+                centro_costo_id: l.centro_costo_id ? parseInt(l.centro_costo_id) : null,
+                unidad_interna_id: l.unidad_interna_id ? parseInt(l.unidad_interna_id) : null,
+                importe: parseFloat(l.importe) || 0
+              };
+            }),
           ...formData.articulos.map(art => {
             const isServicio = art.tipo_linea === 'servicio';
             const selectedArticulo = !isServicio ? inventario.find(inv => inv.id === art.articulo_id) : null;
@@ -512,6 +521,7 @@ const FacturaFormModal = ({
                   <option value="boleta">Boleta</option>
                   <option value="recibo">Recibo por Honorarios</option>
                   <option value="nota_credito">Nota de Credito</option>
+                  <option value="nota_interna">Nota Interna (producción propia)</option>
                 </select>
               </div>
               <div className="form-group" style={{ maxWidth: '200px' }}>
@@ -570,6 +580,19 @@ const FacturaFormModal = ({
                   </select>
                 </div>
               </div>
+              {formData.lineas.length === 0 ? (
+                <div style={{
+                  padding: '1.25rem', textAlign: 'center',
+                  color: 'var(--muted)', fontSize: '0.875rem',
+                  background: 'var(--muted-bg, rgba(0,0,0,0.02))',
+                  border: '1px dashed var(--border)', borderRadius: '6px',
+                }}>
+                  Sin líneas de categoría.
+                  {!isLocked && (
+                    <> Agregá una con el botón <b>Agregar línea</b> si la factura incluye gastos distintos a los artículos/servicios de abajo.</>
+                  )}
+                </div>
+              ) : (
               <div className="table-scroll-wrapper">
                 <table className="factura-table">
                   <thead>
@@ -616,7 +639,7 @@ const FacturaFormModal = ({
                             {!isLocked && (
                               <>
                                 <button type="button" className="btn-icon-small" onClick={() => handleDuplicateLinea(index)} title="Duplicar"><Copy size={14} /></button>
-                                <button type="button" className="btn-icon-small" onClick={() => handleRemoveLinea(index)} title="Eliminar" disabled={formData.lineas.length === 1}><Trash2 size={14} /></button>
+                                <button type="button" className="btn-icon-small" onClick={() => handleRemoveLinea(index)} title="Eliminar"><Trash2 size={14} /></button>
                               </>
                             )}
                           </td>
@@ -674,11 +697,12 @@ const FacturaFormModal = ({
                   </tbody>
                 </table>
               </div>
+              )}
               <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.75rem' }}>
                 {!isLocked && (
                   <>
                     <button type="button" className="btn btn-outline btn-sm" onClick={handleAddLinea}><Plus size={16} /> Agregar linea</button>
-                    <button type="button" className="btn btn-outline btn-sm" onClick={() => setFormData(prev => ({ ...prev, lineas: [getEmptyLinea()] }))}>Borrar todas las lineas</button>
+                    <button type="button" className="btn btn-outline btn-sm" onClick={() => setFormData(prev => ({ ...prev, lineas: [] }))}>Borrar todas las lineas</button>
                   </>
                 )}
               </div>

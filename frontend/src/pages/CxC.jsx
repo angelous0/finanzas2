@@ -82,7 +82,7 @@ export default function CxC() {
       const [abRes] = await Promise.all([getCxCAbonos(selectedId), loadData()]);
       setAbonos(abRes.data || []);
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Error al registrar abono');
+      toast.error(typeof err.response?.data?.detail === 'string' ? err.response?.data?.detail : 'Error al registrar abono');
     } finally { setSaving(false); }
   };
 
@@ -97,7 +97,7 @@ export default function CxC() {
       setCreateForm({ cliente_id: '', monto_original: '', fecha_vencimiento: '', documento_referencia: '', notas: '' });
       loadData();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Error');
+      toast.error(typeof err.response?.data?.detail === 'string' ? err.response?.data?.detail : 'Error');
     } finally { setSaving(false); }
   };
 

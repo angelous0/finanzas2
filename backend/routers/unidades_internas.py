@@ -120,6 +120,7 @@ async def list_cargos_internos(
     unidad_interna_id: Optional[int] = None,
     fecha_desde: Optional[date] = None,
     fecha_hasta: Optional[date] = None,
+    con_nota: Optional[str] = None,  # "si" | "no" | None para todos
     empresa_id: int = Depends(get_empresa_id),
 ):
     pool = await get_pool()
@@ -137,10 +138,23 @@ async def list_cargos_internos(
         if fecha_hasta:
             conditions.append(f"c.fecha <= ${idx}")
             params.append(fecha_hasta); idx += 1
+        if con_nota == "si":
+            conditions.append("mp.factura_numero LIKE 'NI-%'")
+        elif con_nota == "no":
+            conditions.append("(mp.factura_numero IS NULL OR mp.factura_numero NOT LIKE 'NI-%')")
         rows = await conn.fetch(f"""
-            SELECT c.*, u.nombre as unidad_nombre
+            SELECT
+                c.*,
+                u.nombre as unidad_nombre,
+                r.n_corte as n_corte,
+                COALESCE(m.nombre, r.modelo_manual->>'nombre_modelo') AS modelo_nombre,
+                mp.factura_numero,
+                CASE WHEN mp.factura_numero LIKE 'NI-%' THEN mp.factura_id ELSE NULL END AS nota_interna_id
             FROM finanzas2.fin_cargo_interno c
             LEFT JOIN finanzas2.fin_unidad_interna u ON c.unidad_interna_id = u.id
+            LEFT JOIN produccion.prod_movimientos_produccion mp ON mp.id::text = c.movimiento_id
+            LEFT JOIN produccion.prod_registros r ON r.id = c.registro_id
+            LEFT JOIN produccion.prod_modelos m ON m.id = r.modelo_id
             WHERE {' AND '.join(conditions)}
             ORDER BY c.fecha DESC, c.id DESC
         """, *params)
@@ -153,6 +167,8 @@ async def list_cargos_internos(
                 from decimal import Decimal
                 if isinstance(d[k], Decimal):
                     d[k] = float(d[k])
+            # Etiqueta visual
+            d['tiene_nota_interna'] = bool(d.get('factura_numero') and str(d.get('factura_numero')).startswith('NI-'))
             result.append(d)
         return result
 
@@ -160,14 +176,22 @@ async def list_cargos_internos(
 @router.post("/cargos-internos/generar")
 async def generar_cargos_internos(empresa_id: int = Depends(get_empresa_id)):
     """
-    Scan production movements where persona is INTERNO and generate
-    fin_cargo_interno records (skipping duplicates via movimiento_id UNIQUE).
+    Escanea movimientos de personas INTERNO sin cargo y los crea como CxC virtual.
+
+    ⚠️ NUEVO FLUJO (post-migración): estos cargos se crean en estado 'generado'
+    SIN tocar el saldo de la cuenta ficticia. Son CxC virtuales pendientes.
+
+    Para que cuenten como ingreso efectivo, hay que:
+    1. Generar una Nota Interna (NI) desde el reporte de Producción que los agrupe, O
+    2. Procesar la NI asociada (si ya existe).
+
+    Este endpoint sirve como utilidad para "detectar" movimientos internos no
+    valorizados, pero el camino recomendado es crear las NIs desde Producción.
     """
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("SET search_path TO finanzas2, public")
 
-        # Find all movements by internal personas that don't have a cargo yet
         movimientos = await conn.fetch("""
             SELECT m.id as movimiento_id, m.registro_id, m.servicio_id,
                    m.persona_id, m.cantidad_recibida, m.cantidad_enviada,
@@ -189,13 +213,13 @@ async def generar_cargos_internos(empresa_id: int = Depends(get_empresa_id)):
         """)
 
         generados = 0
+        total_importe = 0.0
         for mov in movimientos:
             cantidad = mov['cantidad_recibida'] or mov['cantidad_enviada'] or 0
             tarifa = float(mov['tarifa_aplicada'] or 0)
             importe = float(mov['costo_calculado'] or 0)
             if importe == 0 and tarifa > 0:
                 importe = cantidad * tarifa
-
             if importe == 0:
                 continue
 
@@ -211,31 +235,24 @@ async def generar_cargos_internos(empresa_id: int = Depends(get_empresa_id)):
                     mov['unidad_interna_id'], mov['servicio_nombre'] or '',
                     mov['persona_nombre'] or '', cantidad, tarifa, importe,
                     empresa_id)
-
                 if cargo_id is not None:
                     generados += 1
-                    # Register INGRESO in the unit's fictitious account
-                    cuenta_id = await conn.fetchval("""
-                        SELECT id FROM finanzas2.cont_cuenta_financiera
-                        WHERE empresa_id=$1 AND unidad_interna_id=$2 AND es_ficticia=true
-                    """, empresa_id, mov['unidad_interna_id'])
-                    if cuenta_id:
-                        await conn.execute("""
-                            INSERT INTO finanzas2.fin_movimiento_cuenta
-                            (cuenta_id, empresa_id, tipo, monto, descripcion, fecha, referencia_id, referencia_tipo)
-                            VALUES ($1, $2, 'INGRESO', $3, $4, $5, $6, 'CARGO_INTERNO')
-                        """, cuenta_id, empresa_id, importe,
-                            f"Cobro {cantidad} prendas - {mov['servicio_nombre'] or 'Servicio'}",
-                            mov['fecha'], str(cargo_id))
-                        await conn.execute("""
-                            UPDATE finanzas2.cont_cuenta_financiera
-                            SET saldo_actual = COALESCE(saldo_actual, 0) + $1
-                            WHERE id = $2
-                        """, importe, cuenta_id)
+                    total_importe += importe
+                # ⚠️ NO se crea fin_movimiento_cuenta ni se toca el saldo de la cuenta ficticia.
+                #    El cargo queda como CxC virtual. Para materializar el ingreso, hay que
+                #    generar y procesar una Nota Interna desde el reporte de Producción.
             except Exception as e:
                 logger.warning(f"Error generating cargo for mov {mov['movimiento_id']}: {e}")
 
-        return {"message": f"{generados} cargos internos generados", "generados": generados}
+        return {
+            "message": (
+                f"{generados} cargo(s) creado(s) como CxC virtual por S/ {total_importe:.2f}. "
+                "Para materializar el ingreso, generá Notas Internas desde Producción."
+            ),
+            "generados": generados,
+            "total_importe": round(total_importe, 2),
+            "nota": "Estos cargos NO tocan el saldo de la cuenta ficticia. Son CxC virtuales.",
+        }
 
 
 # ════════════════════════════════════════
@@ -412,6 +429,32 @@ async def reporte_unidades_internas(
         """, *params)
         gastos_cont_map = {r['unidad_interna_id']: float(r['total_gastos_cont']) for r in gastos_cont_agg}
 
+        # Fuente canónica de "gastos": EGRESOS en la cuenta ficticia (fin_movimiento_cuenta)
+        # Esta es la misma fuente que usa el Dashboard de Cuentas Internas, garantiza consistencia.
+        date_cond_mov = ""
+        params_mov = [empresa_id]
+        idx_mov = 2
+        if fecha_desde:
+            date_cond_mov += f" AND mc.fecha >= ${idx_mov}"
+            params_mov.append(fecha_desde); idx_mov += 1
+        if fecha_hasta:
+            date_cond_mov += f" AND mc.fecha <= ${idx_mov}"
+            params_mov.append(fecha_hasta); idx_mov += 1
+
+        egresos_cuenta_agg = await conn.fetch(f"""
+            SELECT cf.unidad_interna_id,
+                   COALESCE(SUM(mc.monto), 0) as total_egresos
+            FROM finanzas2.fin_movimiento_cuenta mc
+            JOIN finanzas2.cont_cuenta_financiera cf ON mc.cuenta_id = cf.id
+            WHERE mc.empresa_id = $1
+              AND mc.tipo = 'EGRESO'
+              AND cf.es_ficticia = true
+              AND cf.unidad_interna_id IS NOT NULL
+              {date_cond_mov}
+            GROUP BY cf.unidad_interna_id
+        """, *params_mov)
+        egresos_cuenta_map = {r['unidad_interna_id']: float(r['total_egresos']) for r in egresos_cuenta_agg}
+
         # Gastos desglosados por tipo per unit
         gastos_detalle = await conn.fetch(f"""
             SELECT g.unidad_interna_id, g.tipo_gasto,
@@ -454,7 +497,11 @@ async def reporte_unidades_internas(
             ingresos = float(cargo_data.get('total_ingresos', 0))
             gastos_ui = float(gasto_data.get('total_gastos', 0))
             gastos_cont = gastos_cont_map.get(uid, 0)
-            gastos_total = gastos_ui + gastos_cont
+            # Usar fin_movimiento_cuenta (fuente canónica) si tiene egresos registrados,
+            # sino fallback a la suma de fin_gasto_unidad_interna + cont_gasto.
+            # Esto garantiza consistencia con el Dashboard de Cuentas Internas.
+            egresos_cuenta = egresos_cuenta_map.get(uid, 0)
+            gastos_total = egresos_cuenta if egresos_cuenta > 0 else (gastos_ui + gastos_cont)
             cantidad = int(cargo_data.get('total_cantidad', 0))
             resultado = ingresos - gastos_total
             costo_promedio = gastos_total / cantidad if cantidad > 0 else 0
@@ -503,4 +550,253 @@ async def reporte_unidades_internas(
                 'resultado_global': total_ingresos - total_gastos,
                 'num_unidades': len(unidades),
             }
+        }
+
+
+# ════════════════════════════════════════
+# P&L DETALLADO POR UNIDAD INTERNA
+# ════════════════════════════════════════
+
+@router.get("/reporte-pnl-unidad/{unidad_id}")
+async def reporte_pnl_unidad(
+    unidad_id: int,
+    fecha_desde: Optional[date] = None,
+    fecha_hasta: Optional[date] = None,
+    empresa_id: int = Depends(get_empresa_id),
+):
+    """
+    Estado de Resultados (P&L) detallado de una unidad interna en un período.
+
+    Estructura:
+    - INGRESOS: cargos pagados (NI procesadas) con detalle de corte/modelo/persona
+    - CxC VIRTUAL: cargos pendientes de procesar (no contabilizados)
+    - GASTOS: gastos reales de la unidad (planilla + directos + facturas imputadas)
+    - UTILIDAD: ingresos - gastos
+    - KPIs: margen %, prendas, costo unitario efectivo, tarifa mercado vs real
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SET search_path TO finanzas2, public")
+
+        unidad = await conn.fetchrow(
+            "SELECT * FROM finanzas2.fin_unidad_interna WHERE id = $1 AND empresa_id = $2",
+            unidad_id, empresa_id,
+        )
+        if not unidad:
+            raise HTTPException(404, "Unidad no encontrada")
+
+        # Cuenta ficticia asociada
+        cuenta = await conn.fetchrow(
+            """
+            SELECT id, nombre, saldo_actual, saldo_inicial
+            FROM finanzas2.cont_cuenta_financiera
+            WHERE unidad_interna_id = $1 AND es_ficticia = TRUE AND empresa_id = $2
+            LIMIT 1
+            """,
+            unidad_id, empresa_id,
+        )
+
+        # Construir filtros de fecha
+        cond_fecha_cargo = ""
+        cond_fecha_gasto = ""
+        params = [unidad_id, empresa_id]
+        idx = 3
+        if fecha_desde:
+            cond_fecha_cargo += f" AND ci.fecha >= ${idx}"
+            cond_fecha_gasto += f" AND g.fecha >= ${idx}"
+            params.append(fecha_desde); idx += 1
+        if fecha_hasta:
+            cond_fecha_cargo += f" AND ci.fecha <= ${idx}"
+            cond_fecha_gasto += f" AND g.fecha <= ${idx}"
+            params.append(fecha_hasta); idx += 1
+
+        # ── INGRESOS: cargos pagados con detalle de corte/modelo ──────────
+        ingresos_rows = await conn.fetch(
+            f"""
+            SELECT ci.id, ci.fecha, ci.cantidad, ci.tarifa, ci.importe,
+                   ci.persona_nombre, ci.servicio_nombre,
+                   r.n_corte,
+                   COALESCE(m.nombre, r.modelo_manual->>'nombre_modelo') AS modelo_nombre,
+                   mp.factura_numero
+            FROM finanzas2.fin_cargo_interno ci
+            LEFT JOIN produccion.prod_movimientos_produccion mp ON mp.id::text = ci.movimiento_id
+            LEFT JOIN produccion.prod_registros r ON r.id = ci.registro_id
+            LEFT JOIN produccion.prod_modelos m ON m.id = r.modelo_id
+            WHERE ci.unidad_interna_id = $1 AND ci.empresa_id = $2
+              AND ci.estado = 'pagado'
+              {cond_fecha_cargo}
+            ORDER BY ci.fecha DESC, ci.id DESC
+            """,
+            *params,
+        )
+        ingresos_items = []
+        total_ingresos = 0.0
+        total_prendas_ing = 0
+        for r in ingresos_rows:
+            item = {
+                "cargo_id": r["id"],
+                "fecha": r["fecha"].isoformat() if r["fecha"] else None,
+                "n_corte": r["n_corte"],
+                "modelo": r["modelo_nombre"] or "—",
+                "persona": r["persona_nombre"] or "",
+                "servicio": r["servicio_nombre"] or "",
+                "cantidad": int(r["cantidad"] or 0),
+                "tarifa": float(r["tarifa"] or 0),
+                "importe": float(r["importe"] or 0),
+                "factura_numero": r["factura_numero"],
+            }
+            ingresos_items.append(item)
+            total_ingresos += item["importe"]
+            total_prendas_ing += item["cantidad"]
+
+        # ── CxC VIRTUAL: cargos pendientes (no contabilizados) ───────────
+        cxc_rows = await conn.fetch(
+            f"""
+            SELECT ci.id, ci.fecha, ci.cantidad, ci.tarifa, ci.importe,
+                   ci.persona_nombre, ci.servicio_nombre,
+                   r.n_corte,
+                   COALESCE(m.nombre, r.modelo_manual->>'nombre_modelo') AS modelo_nombre,
+                   mp.factura_numero
+            FROM finanzas2.fin_cargo_interno ci
+            LEFT JOIN produccion.prod_movimientos_produccion mp ON mp.id::text = ci.movimiento_id
+            LEFT JOIN produccion.prod_registros r ON r.id = ci.registro_id
+            LEFT JOIN produccion.prod_modelos m ON m.id = r.modelo_id
+            WHERE ci.unidad_interna_id = $1 AND ci.empresa_id = $2
+              AND ci.estado = 'generado'
+              {cond_fecha_cargo}
+            ORDER BY ci.fecha DESC, ci.id DESC
+            """,
+            *params,
+        )
+        cxc_items = []
+        total_cxc = 0.0
+        total_prendas_cxc = 0
+        for r in cxc_rows:
+            item = {
+                "cargo_id": r["id"],
+                "fecha": r["fecha"].isoformat() if r["fecha"] else None,
+                "n_corte": r["n_corte"],
+                "modelo": r["modelo_nombre"] or "—",
+                "persona": r["persona_nombre"] or "",
+                "servicio": r["servicio_nombre"] or "",
+                "cantidad": int(r["cantidad"] or 0),
+                "tarifa": float(r["tarifa"] or 0),
+                "importe": float(r["importe"] or 0),
+                "factura_numero": r["factura_numero"],
+            }
+            cxc_items.append(item)
+            total_cxc += item["importe"]
+            total_prendas_cxc += item["cantidad"]
+
+        # ── GASTOS: directos de la unidad (fin_gasto_unidad_interna) ──────
+        gastos_dir = await conn.fetch(
+            f"""
+            SELECT g.id, g.fecha, g.tipo_gasto, g.descripcion, g.monto
+            FROM finanzas2.fin_gasto_unidad_interna g
+            WHERE g.unidad_interna_id = $1 AND g.empresa_id = $2
+              {cond_fecha_gasto}
+            ORDER BY g.fecha DESC, g.id DESC
+            """,
+            *params,
+        )
+        gastos_items = []
+        for g in gastos_dir:
+            gastos_items.append({
+                "gasto_id": g["id"],
+                "fecha": g["fecha"].isoformat() if g["fecha"] else None,
+                "categoria": g["tipo_gasto"] or "Otros",
+                "concepto": g["descripcion"] or "",
+                "monto": float(g["monto"] or 0),
+                "origen": "directo",
+            })
+
+        # Líneas de factura de proveedor con unidad_interna_id
+        gastos_facturas = await conn.fetch(
+            f"""
+            SELECT fpl.id, fp.fecha_factura AS fecha, fp.numero AS factura_numero,
+                   c.nombre AS categoria_nombre,
+                   fpl.descripcion, fpl.importe
+            FROM finanzas2.cont_factura_proveedor_linea fpl
+            JOIN finanzas2.cont_factura_proveedor fp ON fp.id = fpl.factura_id
+            LEFT JOIN finanzas2.cont_categoria c ON c.id = fpl.categoria_id
+            WHERE fpl.unidad_interna_id = $1 AND fpl.empresa_id = $2
+              AND fp.tipo_documento != 'nota_interna'
+              {cond_fecha_gasto.replace('g.fecha', 'fp.fecha_factura')}
+            ORDER BY fp.fecha_factura DESC
+            """,
+            *params,
+        )
+        for g in gastos_facturas:
+            gastos_items.append({
+                "gasto_id": f"fact-{g['id']}",
+                "fecha": g["fecha"].isoformat() if g["fecha"] else None,
+                "categoria": g["categoria_nombre"] or "Factura",
+                "concepto": f"{g['factura_numero']} — {g['descripcion'] or ''}",
+                "monto": float(g["importe"] or 0),
+                "origen": "factura",
+            })
+
+        gastos_items.sort(key=lambda x: x["fecha"] or "", reverse=True)
+        total_gastos = sum(g["monto"] for g in gastos_items)
+
+        # Agrupación de gastos por categoría
+        gastos_por_cat = {}
+        for g in gastos_items:
+            cat = g["categoria"]
+            gastos_por_cat[cat] = gastos_por_cat.get(cat, 0) + g["monto"]
+        gastos_agrupado = [
+            {"categoria": k, "monto": round(v, 2)}
+            for k, v in sorted(gastos_por_cat.items(), key=lambda x: -x[1])
+        ]
+
+        # ── KPIs ────────────────────────────────────────────────────────
+        utilidad = total_ingresos - total_gastos
+        margen_pct = (utilidad / total_ingresos * 100) if total_ingresos > 0 else 0
+        costo_real_por_prenda = (total_gastos / total_prendas_ing) if total_prendas_ing > 0 else 0
+        tarifa_mercado_prom = (total_ingresos / total_prendas_ing) if total_prendas_ing > 0 else 0
+
+        return {
+            "unidad": {
+                "id": unidad["id"],
+                "nombre": unidad["nombre"],
+                "tipo": unidad["tipo"],
+            },
+            "cuenta_ficticia": {
+                "id": cuenta["id"] if cuenta else None,
+                "saldo_actual": float(cuenta["saldo_actual"]) if cuenta else 0.0,
+            } if cuenta else None,
+            "periodo": {
+                "desde": fecha_desde.isoformat() if fecha_desde else None,
+                "hasta": fecha_hasta.isoformat() if fecha_hasta else None,
+            },
+            "ingresos": {
+                "items": ingresos_items,
+                "total": round(total_ingresos, 2),
+                "prendas": total_prendas_ing,
+                "count": len(ingresos_items),
+            },
+            "cxc_virtual": {
+                "items": cxc_items,
+                "total": round(total_cxc, 2),
+                "prendas": total_prendas_cxc,
+                "count": len(cxc_items),
+            },
+            "gastos": {
+                "items": gastos_items,
+                "agrupado_categoria": gastos_agrupado,
+                "total": round(total_gastos, 2),
+                "count": len(gastos_items),
+            },
+            "utilidad": {
+                "total": round(utilidad, 2),
+                "margen_pct": round(margen_pct, 2),
+                "es_rentable": utilidad >= 0,
+            },
+            "kpis": {
+                "prendas_total": total_prendas_ing,
+                "costo_real_por_prenda": round(costo_real_por_prenda, 4),
+                "tarifa_mercado_promedio": round(tarifa_mercado_prom, 4),
+                "potencial_total": round(total_ingresos + total_cxc, 2),
+                "utilidad_potencial": round((total_ingresos + total_cxc) - total_gastos, 2),
+            },
         }

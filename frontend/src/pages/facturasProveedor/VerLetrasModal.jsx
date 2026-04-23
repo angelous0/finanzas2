@@ -36,7 +36,7 @@ const VerLetrasModal = ({ show, factura, onClose, onDataChanged }) => {
       onDataChanged();
     } catch (error) {
       console.error('Error deshaciendo canje:', error);
-      toast.error(error.response?.data?.detail || 'Error al deshacer canje');
+      toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error al deshacer canje');
     }
   };
 

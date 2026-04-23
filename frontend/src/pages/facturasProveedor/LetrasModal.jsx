@@ -84,7 +84,7 @@ const LetrasModal = ({ show, factura, cuentasFinancieras, onClose, onLetrasCread
       onLetrasCreadas();
     } catch (error) {
       console.error('Error creando letras:', error);
-      toast.error(error.response?.data?.detail || 'Error al crear letras');
+      toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error al crear letras');
     }
   };
 

@@ -5,7 +5,7 @@ import { History, Trash2, Search, Download, RefreshCw, Calendar } from 'lucide-r
 import { toast } from 'sonner';
 
 const formatCurrency = (value, symbol = 'S/') => {
-  return `${symbol} ${Number(value || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}`;
+  return `${symbol} ${Number(value || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
 const formatDate = (dateStr) => {

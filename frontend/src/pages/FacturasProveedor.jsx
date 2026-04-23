@@ -135,7 +135,7 @@ export const FacturasProveedor = () => {
       loadData();
     } catch (error) {
       console.error('Error deleting factura:', error);
-      toast.error(error.response?.data?.detail || 'Error al eliminar factura');
+      toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error al eliminar factura');
     }
   };
 
@@ -200,6 +200,7 @@ export const FacturasProveedor = () => {
           onDownloadPDF={(f) => generatePDFAndPrint(f, proveedores, monedas)}
           onNewFactura={handleNewFactura}
           onVincularIngresos={(f) => { setFacturaParaVincular(f); setShowVincularModal(true); }}
+          onRefresh={loadData}
         />
       </div>
 

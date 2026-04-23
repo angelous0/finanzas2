@@ -32,33 +32,22 @@ import LineasNegocio from './pages/LineasNegocio';
 import CentrosCosto from './pages/CentrosCosto';
 import Marcas from './pages/Marcas';
 import Empresas from './pages/Empresas';
-import { Clientes } from './pages/PlaceholderPages';
 
 // === REVISAR Pages (pendiente decisión Fase 2) ===
 import OrdenesCompra from './pages/OrdenesCompra';
 import Letras from './pages/Letras';
-import PagarFacturas from './pages/PagarFacturas';
 import ConciliacionBancaria from './pages/ConciliacionBancaria';
 import { HistorialConciliaciones } from './pages/HistorialConciliaciones';
 
-// === Reportes adicionales ===
-import FlujoCaja from './pages/FlujoCaja';
-import RentabilidadLinea from './pages/RentabilidadLinea';
-import ReportesSimplificados from './pages/ReportesSimplificados';
-
-// === Planilla ===
-import Planilla from './pages/Planilla';
+// === Planilla === eliminado en [planilla-reset], se rehace desde cero
 
 // === Activos Fijos ===
 import ActivosFijos from './pages/ActivosFijos';
 
 // === Unidades Internas de Producción ===
-import UnidadesInternas from './pages/UnidadesInternas';
-import GastosUnidadInterna from './pages/GastosUnidadInterna';
-import CargosInternos from './pages/CargosInternos';
-import ReporteUnidadesInternas from './pages/ReporteUnidadesInternas';
-import CuentasInternas from './pages/CuentasInternas';
-import MovimientosProduccion from './pages/MovimientosProduccion';
+import ProduccionInterna from './pages/ProduccionInterna';
+import KardexCuentaInterna from './pages/KardexCuentaInterna';
+import PnLUnidadInterna from './pages/PnLUnidadInterna';
 
 function EmpresaGuard({ children }) {
   const { empresas, empresaActual, loading, reloadEmpresas } = useEmpresa();
@@ -138,29 +127,30 @@ function AppRoutes() {
         <Route path="/reportes-financieros" element={<ReportesFinancieros />} />
         <Route path="/libro-analitico" element={<LibroAnalitico />} />
         <Route path="/valorizacion-inventario" element={<ValorizacionInventario />} />
-        <Route path="/flujo-caja" element={<FlujoCaja />} />
-        <Route path="/rentabilidad-linea" element={<RentabilidadLinea />} />
-        <Route path="/reportes-simplificados" element={<ReportesSimplificados />} />
         <Route path="/lineas-negocio" element={<LineasNegocio />} />
         <Route path="/marcas" element={<Marcas />} />
         <Route path="/centros-costo" element={<CentrosCosto />} />
         <Route path="/categorias-gasto" element={<CategoriasGasto />} />
-        <Route path="/clientes" element={<Clientes />} />
         <Route path="/empresas" element={<Empresas />} />
 
         {/* === REVISAR — pendiente decisión Fase 2 === */}
         <Route path="/ordenes-compra" element={<OrdenesCompra />} />
-        <Route path="/pagar-facturas" element={<PagarFacturas />} />
         <Route path="/letras" element={<Letras />} />
         <Route path="/conciliacion" element={<ConciliacionBancaria />} />
         <Route path="/historial-conciliaciones" element={<HistorialConciliaciones />} />
-        <Route path="/unidades-internas" element={<UnidadesInternas />} />
-        <Route path="/gastos-unidad-interna" element={<GastosUnidadInterna />} />
-        <Route path="/cargos-internos" element={<CargosInternos />} />
-        <Route path="/reporte-unidades-internas" element={<ReporteUnidadesInternas />} />
-        <Route path="/cuentas-internas" element={<CuentasInternas />} />
-        <Route path="/movimientos-produccion" element={<MovimientosProduccion />} />
-        <Route path="/planilla" element={<Planilla />} />
+        {/* Hub unificado (tabs) + rutas individuales legacy que redirigen al hub */}
+        <Route path="/produccion-interna" element={<ProduccionInterna />} />
+        <Route path="/produccion-interna/:tab" element={<ProduccionInterna />} />
+        <Route path="/unidades-internas" element={<ProduccionInterna />} />
+        <Route path="/gastos-unidad-interna" element={<ProduccionInterna />} />
+        <Route path="/cargos-internos" element={<ProduccionInterna />} />
+        <Route path="/reporte-unidades-internas" element={<ProduccionInterna />} />
+        <Route path="/cuentas-internas" element={<ProduccionInterna />} />
+        <Route path="/movimientos-produccion" element={<ProduccionInterna />} />
+        {/* Detalle: kardex y P&L siguen como páginas independientes */}
+        <Route path="/cuentas-internas/:id/kardex" element={<KardexCuentaInterna />} />
+        <Route path="/reporte-pnl-unidad/:id" element={<PnLUnidadInterna />} />
+        {/* /planilla y /trabajadores: eliminados en [planilla-reset] */}
         <Route path="/activos-fijos" element={<ActivosFijos />} />
       </Routes>
     </div>

@@ -12,7 +12,7 @@ import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
 
 const formatCurrency = (value, symbol = 'S/') => {
-  return `${symbol} ${Number(value || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}`;
+  return `${symbol} ${Number(value || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
 const formatDateTime = (dateStr) => {
@@ -319,7 +319,7 @@ export const VentasPOS = () => {
       closePagosOficialesModal();
       loadVentas();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Error al desconfirmar venta');
+      toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error al desconfirmar venta');
     }
   };
 

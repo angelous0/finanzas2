@@ -32,7 +32,7 @@ async def ventas_por_linea(
             LEFT JOIN cont_venta_pos_estado e
                 ON e.odoo_order_id = v.odoo_id AND e.empresa_id = v.empresa_id
             LEFT JOIN cont_linea_negocio ln
-                ON ln.odoo_linea_negocio_id = l.odoo_linea_negocio_id
+                ON ln.id = l.linea_negocio_id
                 AND ln.empresa_id = v.empresa_id
             LEFT JOIN cont_linea_negocio sc
                 ON sc.nombre = 'SIN CLASIFICAR' AND sc.empresa_id = v.empresa_id
@@ -90,7 +90,7 @@ async def cobranza_por_linea(
             LEFT JOIN cont_venta_pos_estado e
                 ON e.odoo_order_id = v.odoo_id AND e.empresa_id = v.empresa_id
             LEFT JOIN cont_linea_negocio ln
-                ON ln.odoo_linea_negocio_id = l.odoo_linea_negocio_id
+                ON ln.id = l.linea_negocio_id
                 AND ln.empresa_id = v.empresa_id
             LEFT JOIN cont_linea_negocio sc
                 ON sc.nombre = 'SIN CLASIFICAR' AND sc.empresa_id = v.empresa_id
@@ -174,7 +174,7 @@ async def cruce_linea_marca(
             LEFT JOIN cont_venta_pos_estado e
                 ON e.odoo_order_id = v.odoo_id AND e.empresa_id = v.empresa_id
             LEFT JOIN cont_linea_negocio ln
-                ON ln.odoo_linea_negocio_id = l.odoo_linea_negocio_id
+                ON ln.id = l.linea_negocio_id
                 AND ln.empresa_id = v.empresa_id
             WHERE v.empresa_id = $1
               AND v.date_order::date BETWEEN $2 AND $3
@@ -302,7 +302,7 @@ async def dinero_por_linea(
             LEFT JOIN cont_venta_pos_estado e
                 ON e.odoo_order_id = v.odoo_id AND e.empresa_id = v.empresa_id
             LEFT JOIN cont_linea_negocio ln
-                ON ln.odoo_linea_negocio_id = l.odoo_linea_negocio_id
+                ON ln.id = l.linea_negocio_id
                 AND ln.empresa_id = v.empresa_id
             LEFT JOIN cont_linea_negocio sc
                 ON sc.nombre = 'SIN CLASIFICAR' AND sc.empresa_id = v.empresa_id

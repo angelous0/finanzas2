@@ -572,11 +572,19 @@ async def reporte_cxp_aging(
         rows = await conn.fetch("""
             SELECT cp.id, cp.monto_original, cp.saldo_pendiente, cp.fecha_vencimiento,
                    cp.estado, cp.documento_referencia, cp.created_at,
-                   t.nombre as proveedor,
+                   COALESCE(
+                       t.nombre,
+                       g.beneficiario_nombre,
+                       CASE
+                           WHEN cp.documento_referencia LIKE 'GAS-%' THEN 'Gasto directo'
+                           ELSE 'Sin proveedor'
+                       END
+                   ) as proveedor,
                    ln.nombre as linea_negocio
             FROM finanzas2.cont_cxp cp
             LEFT JOIN finanzas2.cont_tercero t ON cp.proveedor_id = t.id
             LEFT JOIN finanzas2.cont_linea_negocio ln ON cp.linea_negocio_id = ln.id
+            LEFT JOIN finanzas2.cont_gasto g ON cp.documento_referencia = g.numero AND g.empresa_id = cp.empresa_id
             WHERE cp.empresa_id = $1 AND cp.estado NOT IN ('anulada', 'pagado')
               AND cp.saldo_pendiente > 0
             ORDER BY cp.fecha_vencimiento

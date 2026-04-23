@@ -364,10 +364,12 @@ async def list_facturas_proveedor(
         if fecha_hasta:
             conditions.append(f"fp.fecha_factura <= ${idx}"); params.append(fecha_hasta); idx += 1
         query = f"""
-            SELECT fp.*, t.nombre as proveedor_nombre, m.codigo as moneda_codigo, m.simbolo as moneda_simbolo
+            SELECT fp.*, t.nombre as proveedor_nombre, m.codigo as moneda_codigo, m.simbolo as moneda_simbolo,
+                   ui.nombre as unidad_interna_nombre
             FROM finanzas2.cont_factura_proveedor fp
             LEFT JOIN finanzas2.cont_tercero t ON fp.proveedor_id = t.id
             LEFT JOIN finanzas2.cont_moneda m ON fp.moneda_id = m.id
+            LEFT JOIN finanzas2.fin_unidad_interna ui ON fp.unidad_interna_id = ui.id
             WHERE {' AND '.join(conditions)}
             ORDER BY fp.fecha_factura DESC, fp.id DESC
         """
@@ -529,6 +531,7 @@ async def update_factura_proveedor(id: int, data: FacturaProveedorUpdate, empres
             raise HTTPException(400, "No se puede editar una factura anulada")
 
         is_locked = factura['estado'] in ('pagado', 'canjeado')
+        es_nota_interna = (factura['tipo_documento'] == 'nota_interna')
         CLASSIFICATION_FIELDS = {'notas', 'fecha_contable', 'tipo_comprobante_sunat'}
 
         data_dict = data.model_dump(exclude_unset=True)
@@ -547,6 +550,16 @@ async def update_factura_proveedor(id: int, data: FacturaProveedorUpdate, empres
             query = f"UPDATE finanzas2.cont_factura_proveedor SET {', '.join(updates)}, updated_at = NOW() WHERE id = ${idx}"
             await conn.execute(query, *values)
 
+        # Para propagación NI: guardamos snapshot de líneas viejas ANTES del UPDATE
+        lineas_viejas_map = {}
+        if es_nota_interna and lineas_data is not None:
+            lineas_viejas = await conn.fetch("""
+                SELECT id, servicio_id, modelo_corte_id, cantidad, precio_unitario, importe
+                FROM finanzas2.cont_factura_proveedor_linea
+                WHERE factura_id = $1
+            """, id)
+            lineas_viejas_map = {l['id']: dict(l) for l in lineas_viejas}
+
         if lineas_data is not None:
             LINEA_CLASS_FIELDS = {'categoria_id', 'descripcion', 'linea_negocio_id', 'centro_costo_id', 'unidad_interna_id'}
             LINEA_ALL_FIELDS = {'categoria_id', 'descripcion', 'linea_negocio_id', 'centro_costo_id',
@@ -557,6 +570,8 @@ async def update_factura_proveedor(id: int, data: FacturaProveedorUpdate, empres
             classification_changed = False
 
             incoming_ids = set()
+            # Para propagación NI: acumulamos cambios detectados y los aplicamos al final
+            cambios_ni = []  # lista de dicts: {linea_id, servicio_id, modelo_corte_id, precio_nuevo, cant_nueva, importe_nuevo, ..._viejo}
             for linea in lineas_data:
                 linea_id = linea.get('id')
                 if linea_id:
@@ -573,6 +588,20 @@ async def update_factura_proveedor(id: int, data: FacturaProveedorUpdate, empres
                         lv.append(linea_id)
                         await conn.execute(
                             f"UPDATE finanzas2.cont_factura_proveedor_linea SET {', '.join(lu)} WHERE id = ${li}", *lv)
+                    # Detectar cambios relevantes para propagar a NI
+                    if es_nota_interna and linea_id in lineas_viejas_map:
+                        vieja = lineas_viejas_map[linea_id]
+                        cambios_ni.append({
+                            'linea_id': linea_id,
+                            'servicio_id': vieja['servicio_id'],
+                            'modelo_corte_id': vieja['modelo_corte_id'],
+                            'precio_viejo': float(vieja['precio_unitario'] or 0),
+                            'precio_nuevo': float(linea.get('precio_unitario', vieja['precio_unitario']) or 0),
+                            'cant_vieja': int(vieja['cantidad'] or 0),
+                            'cant_nueva': int(linea.get('cantidad', vieja['cantidad']) or 0),
+                            'importe_viejo': float(vieja['importe'] or 0),
+                            'importe_nuevo': float(linea.get('importe', vieja['importe']) or 0),
+                        })
                 elif not is_locked:
                     await conn.execute("""
                         INSERT INTO finanzas2.cont_factura_proveedor_linea
@@ -597,6 +626,96 @@ async def update_factura_proveedor(id: int, data: FacturaProveedorUpdate, empres
             if classification_changed:
                 await recalcular_distribuciones_factura(conn, empresa_id, id)
 
+            # ─────────────────────────────────────────────────────────────
+            # PROPAGACIÓN NOTA INTERNA → cargos + cuenta ficticia + movimiento
+            # Si la factura es nota_interna y se editaron precios/cantidades,
+            # propagar los cambios al cargo interno, al movimiento en cuenta
+            # ficticia, al saldo de la cuenta, y al movimiento de producción.
+            # Todo transaccional (estamos dentro del pool.acquire context).
+            # ─────────────────────────────────────────────────────────────
+            if es_nota_interna and cambios_ni:
+                factura_numero = factura['numero']
+                for ch in cambios_ni:
+                    precio_cambio = abs(ch['precio_nuevo'] - ch['precio_viejo']) > 0.0001
+                    cant_cambio = ch['cant_nueva'] != ch['cant_vieja']
+                    importe_cambio = abs(ch['importe_nuevo'] - ch['importe_viejo']) > 0.01
+                    if not (precio_cambio or cant_cambio or importe_cambio):
+                        continue
+
+                    diff_importe = ch['importe_nuevo'] - ch['importe_viejo']
+
+                    # Encontrar el movimiento de producción asociado
+                    mov = await conn.fetchrow("""
+                        SELECT mp.id
+                        FROM produccion.prod_movimientos_produccion mp
+                        WHERE mp.factura_numero = $1
+                          AND mp.registro_id = $2
+                          AND mp.servicio_id = $3
+                        LIMIT 1
+                    """, factura_numero, ch['modelo_corte_id'], ch['servicio_id'])
+                    if not mov:
+                        continue
+                    mov_id = mov['id']
+
+                    # 1) Propagar al movimiento de producción
+                    await conn.execute("""
+                        UPDATE produccion.prod_movimientos_produccion
+                        SET tarifa_aplicada = $1, costo_calculado = $2
+                        WHERE id = $3
+                    """, ch['precio_nuevo'], ch['importe_nuevo'], mov_id)
+
+                    # 2) Propagar al cargo interno
+                    cargo = await conn.fetchrow("""
+                        SELECT id, unidad_interna_id
+                        FROM finanzas2.fin_cargo_interno
+                        WHERE movimiento_id = $1
+                    """, mov_id)
+                    if cargo:
+                        await conn.execute("""
+                            UPDATE finanzas2.fin_cargo_interno
+                            SET tarifa = $1, cantidad = $2, importe = $3, updated_at = NOW()
+                            WHERE id = $4
+                        """, ch['precio_nuevo'], ch['cant_nueva'], ch['importe_nuevo'], cargo['id'])
+
+                        # 3) Actualizar movimiento en cuenta ficticia
+                        await conn.execute("""
+                            UPDATE finanzas2.fin_movimiento_cuenta
+                            SET monto = $1,
+                                descripcion = $2
+                            WHERE referencia_tipo = 'CARGO_INTERNO' AND referencia_id = $3
+                        """, ch['importe_nuevo'],
+                            f"Cobro {ch['cant_nueva']} prendas - editado (NI {factura_numero})",
+                            str(cargo['id']))
+
+                        # 4) Ajustar saldo de la cuenta ficticia
+                        cuenta_id = await conn.fetchval("""
+                            SELECT id FROM finanzas2.cont_cuenta_financiera
+                            WHERE unidad_interna_id = $1 AND es_ficticia = TRUE AND empresa_id = $2
+                            LIMIT 1
+                        """, cargo['unidad_interna_id'], empresa_id)
+                        if cuenta_id:
+                            await conn.execute("""
+                                UPDATE finanzas2.cont_cuenta_financiera
+                                SET saldo_actual = COALESCE(saldo_actual, 0) + $1
+                                WHERE id = $2
+                            """, diff_importe, cuenta_id)
+
+                        # 5) Log de auditoría
+                        await conn.execute("""
+                            INSERT INTO finanzas2.fin_cargo_interno_log
+                                (cargo_id, factura_id, factura_linea_id, movimiento_id,
+                                 tarifa_vieja, tarifa_nueva,
+                                 cantidad_vieja, cantidad_nueva,
+                                 importe_viejo, importe_nuevo, diff_importe,
+                                 motivo, empresa_id)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'edicion_ni', $12)
+                        """,
+                            cargo['id'], id, ch['linea_id'], mov_id,
+                            ch['precio_viejo'], ch['precio_nuevo'],
+                            ch['cant_vieja'], ch['cant_nueva'],
+                            ch['importe_viejo'], ch['importe_nuevo'], diff_importe,
+                            empresa_id)
+
         return await get_factura_proveedor(id, empresa_id)
 
 
@@ -618,9 +737,245 @@ async def delete_factura_proveedor(id: int, empresa_id: int = Depends(get_empres
             letras = await conn.fetchval("SELECT COUNT(*) FROM finanzas2.cont_letra WHERE factura_id = $1", id)
             if letras > 0:
                 raise HTTPException(400, "Cannot delete factura with letras. Delete letras first.")
+
+            factura_id_str = str(id)
+            factura_numero = factura["numero"]
+            tipo_doc = factura["tipo_documento"] or ""
+
+            # 1) Si era NOTA INTERNA: revertir cargos internos ANTES de desvincular
+            if tipo_doc == "nota_interna":
+                cargos = await conn.fetch(
+                    """
+                    SELECT ci.id, ci.unidad_interna_id, ci.importe, ci.estado
+                    FROM finanzas2.fin_cargo_interno ci
+                    WHERE ci.movimiento_id IN (
+                        SELECT id::text FROM produccion.prod_movimientos_produccion
+                        WHERE factura_numero = $1
+                    )
+                    """,
+                    factura_numero,
+                )
+                for c in cargos:
+                    # Solo si el cargo estaba PROCESADO ('pagado') hay movimiento de cuenta
+                    # que revertir (el 'generado' es solo una CxC virtual, no tocó el saldo).
+                    if c["estado"] == "pagado":
+                        cuenta_id = await conn.fetchval(
+                            """
+                            SELECT id FROM finanzas2.cont_cuenta_financiera
+                            WHERE unidad_interna_id = $1 AND es_ficticia = TRUE
+                              AND empresa_id = $2
+                            LIMIT 1
+                            """,
+                            c["unidad_interna_id"], empresa_id,
+                        )
+                        if cuenta_id:
+                            await conn.execute(
+                                """
+                                DELETE FROM finanzas2.fin_movimiento_cuenta
+                                WHERE referencia_tipo = 'CARGO_INTERNO' AND referencia_id = $1
+                                """,
+                                str(c["id"]),
+                            )
+                            await conn.execute(
+                                """
+                                UPDATE finanzas2.cont_cuenta_financiera
+                                SET saldo_actual = COALESCE(saldo_actual, 0) - $1
+                                WHERE id = $2
+                                """,
+                                c["importe"], cuenta_id,
+                            )
+                    # Borrar el cargo interno (tanto si era 'generado' como 'pagado')
+                    await conn.execute("DELETE FROM finanzas2.fin_cargo_interno WHERE id = $1", c["id"])
+
+            # 2) Desvincular movimientos de producción (vuelven a "Pendiente" en el reporte)
+            await conn.execute(
+                """
+                UPDATE produccion.prod_movimientos_produccion
+                SET factura_numero = NULL, factura_id = NULL
+                WHERE factura_id = $1 OR factura_numero = $2
+                """,
+                factura_id_str, factura_numero,
+            )
+
             await conn.execute("DELETE FROM finanzas2.cont_cxp WHERE factura_id = $1", id)
             await conn.execute("DELETE FROM finanzas2.cont_factura_proveedor WHERE id = $1 AND empresa_id = $2", id, empresa_id)
             return {"message": "Factura deleted"}
+
+
+# ══════════════════════════════════════════════════════════════════════════
+# PROCESAR NOTA INTERNA — "pagar" internamente la NI, materializando el ingreso
+# ══════════════════════════════════════════════════════════════════════════
+@router.post("/facturas-proveedor/{id}/procesar-nota-interna")
+async def procesar_nota_interna(id: int, empresa_id: int = Depends(get_empresa_id)):
+    """
+    Marca una Nota Interna como 'procesada': crea los movimientos INGRESO en la
+    cuenta ficticia de la unidad, sube el saldo, y pasa los cargos de 'generado'
+    a 'pagado'. Es análogo a cobrar una factura.
+    Idempotente: si ya está procesada, no hace nada (retorna sin error).
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SET search_path TO finanzas2, public")
+        async with conn.transaction():
+            factura = await conn.fetchrow(
+                "SELECT * FROM finanzas2.cont_factura_proveedor WHERE id = $1 AND empresa_id = $2",
+                id, empresa_id,
+            )
+            if not factura:
+                raise HTTPException(404, "Factura no encontrada")
+            if factura["tipo_documento"] != "nota_interna":
+                raise HTTPException(400, "Solo se pueden procesar notas internas")
+            if factura["estado"] == "pagado":
+                return {"message": "Ya estaba procesada", "procesada": False}
+
+            # Traer cargos 'generado' vinculados a esta NI
+            cargos = await conn.fetch(
+                """
+                SELECT ci.id, ci.unidad_interna_id, ci.importe, ci.cantidad,
+                       ci.servicio_nombre, ci.fecha
+                FROM finanzas2.fin_cargo_interno ci
+                WHERE ci.estado = 'generado'
+                  AND ci.movimiento_id IN (
+                      SELECT id::text FROM produccion.prod_movimientos_produccion
+                      WHERE factura_numero = $1
+                  )
+                """,
+                factura["numero"],
+            )
+
+            procesados = 0
+            total_ingresado = 0.0
+            for c in cargos:
+                cuenta_id = await conn.fetchval(
+                    """
+                    SELECT id FROM finanzas2.cont_cuenta_financiera
+                    WHERE unidad_interna_id = $1 AND es_ficticia = TRUE AND empresa_id = $2
+                    LIMIT 1
+                    """,
+                    c["unidad_interna_id"], empresa_id,
+                )
+                if cuenta_id:
+                    await conn.execute(
+                        """
+                        INSERT INTO finanzas2.fin_movimiento_cuenta
+                            (cuenta_id, empresa_id, tipo, monto, descripcion, fecha,
+                             referencia_id, referencia_tipo)
+                        VALUES ($1, $2, 'INGRESO', $3, $4, $5, $6, 'CARGO_INTERNO')
+                        """,
+                        cuenta_id, empresa_id, c["importe"],
+                        f"Cobro {c['cantidad']} prendas - {c['servicio_nombre']} (NI {factura['numero']})",
+                        c["fecha"], str(c["id"]),
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE finanzas2.cont_cuenta_financiera
+                        SET saldo_actual = COALESCE(saldo_actual, 0) + $1
+                        WHERE id = $2
+                        """,
+                        c["importe"], cuenta_id,
+                    )
+                # Marcar el cargo como pagado
+                await conn.execute(
+                    "UPDATE finanzas2.fin_cargo_interno SET estado = 'pagado', updated_at = NOW() WHERE id = $1",
+                    c["id"],
+                )
+                procesados += 1
+                total_ingresado += float(c["importe"])
+
+            # Marcar la factura como pagada
+            await conn.execute(
+                "UPDATE finanzas2.cont_factura_proveedor SET estado = 'pagado', updated_at = NOW() WHERE id = $1",
+                id,
+            )
+
+            return {
+                "message": f"Nota interna procesada: {procesados} cargo(s) por S/ {total_ingresado:.2f}",
+                "procesada": True,
+                "cargos_procesados": procesados,
+                "total_ingresado": round(total_ingresado, 2),
+            }
+
+
+@router.post("/facturas-proveedor/{id}/anular-procesamiento-nota-interna")
+async def anular_procesamiento_nota_interna(id: int, empresa_id: int = Depends(get_empresa_id)):
+    """
+    Revierte el procesamiento de una NI: borra los movimientos INGRESO de la cuenta
+    ficticia, resta el saldo, y vuelve los cargos a 'generado'. La NI vuelve a
+    estado 'pendiente' (CxC virtual).
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SET search_path TO finanzas2, public")
+        async with conn.transaction():
+            factura = await conn.fetchrow(
+                "SELECT * FROM finanzas2.cont_factura_proveedor WHERE id = $1 AND empresa_id = $2",
+                id, empresa_id,
+            )
+            if not factura:
+                raise HTTPException(404, "Factura no encontrada")
+            if factura["tipo_documento"] != "nota_interna":
+                raise HTTPException(400, "Solo aplicable a notas internas")
+            if factura["estado"] != "pagado":
+                return {"message": "No estaba procesada", "revertida": False}
+
+            cargos = await conn.fetch(
+                """
+                SELECT ci.id, ci.unidad_interna_id, ci.importe
+                FROM finanzas2.fin_cargo_interno ci
+                WHERE ci.estado = 'pagado'
+                  AND ci.movimiento_id IN (
+                      SELECT id::text FROM produccion.prod_movimientos_produccion
+                      WHERE factura_numero = $1
+                  )
+                """,
+                factura["numero"],
+            )
+
+            revertidos = 0
+            total_revertido = 0.0
+            for c in cargos:
+                cuenta_id = await conn.fetchval(
+                    """
+                    SELECT id FROM finanzas2.cont_cuenta_financiera
+                    WHERE unidad_interna_id = $1 AND es_ficticia = TRUE AND empresa_id = $2
+                    LIMIT 1
+                    """,
+                    c["unidad_interna_id"], empresa_id,
+                )
+                if cuenta_id:
+                    await conn.execute(
+                        """
+                        DELETE FROM finanzas2.fin_movimiento_cuenta
+                        WHERE referencia_tipo = 'CARGO_INTERNO' AND referencia_id = $1
+                        """,
+                        str(c["id"]),
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE finanzas2.cont_cuenta_financiera
+                        SET saldo_actual = COALESCE(saldo_actual, 0) - $1
+                        WHERE id = $2
+                        """,
+                        c["importe"], cuenta_id,
+                    )
+                await conn.execute(
+                    "UPDATE finanzas2.fin_cargo_interno SET estado = 'generado', updated_at = NOW() WHERE id = $1",
+                    c["id"],
+                )
+                revertidos += 1
+                total_revertido += float(c["importe"])
+
+            await conn.execute(
+                "UPDATE finanzas2.cont_factura_proveedor SET estado = 'pendiente', updated_at = NOW() WHERE id = $1",
+                id,
+            )
+
+            return {
+                "message": f"Procesamiento anulado: {revertidos} cargo(s) por S/ {total_revertido:.2f} revertidos",
+                "revertida": True,
+                "cargos_revertidos": revertidos,
+                "total_revertido": round(total_revertido, 2),
+            }
 
 
 @router.get("/facturas-proveedor/{id}/pagos")

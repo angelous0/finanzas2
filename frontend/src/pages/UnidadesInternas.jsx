@@ -56,7 +56,7 @@ export default function UnidadesInternas() {
       toast.success('Eliminado');
       loadData();
     } catch (e) {
-      toast.error(e.response?.data?.detail || 'Error al eliminar');
+      toast.error(typeof e.response?.data?.detail === 'string' ? e.response?.data?.detail : 'Error al eliminar');
     }
   };
 

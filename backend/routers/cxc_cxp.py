@@ -314,7 +314,11 @@ async def list_cxp(
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("SET search_path TO finanzas2, public")
-        conditions = ["cxp.empresa_id = $1"]
+        conditions = [
+            "cxp.empresa_id = $1",
+            # Excluir documentos sin monto real (gastos creados vacíos o huérfanos)
+            "COALESCE(cxp.monto_original, 0) > 0",
+        ]
         params: list = [empresa_id]
         idx = 2
 
@@ -342,7 +346,14 @@ async def list_cxp(
                    cxp.tipo_origen, cxp.documento_referencia,
                    cxp.marca_id, cxp.linea_negocio_id, cxp.centro_costo_id,
                    cxp.proyecto_id, cxp.categoria_id,
-                   COALESCE(t.nombre, 'Sin Proveedor') as proveedor_nombre,
+                   COALESCE(
+                       t.nombre,
+                       g.beneficiario_nombre,
+                       CASE
+                           WHEN cxp.documento_referencia LIKE 'GAS-%' THEN 'Gasto directo'
+                           ELSE 'Sin Proveedor'
+                       END
+                   ) as proveedor_nombre,
                    fp.numero as factura_numero,
                    m.nombre as marca_nombre,
                    CASE
@@ -357,6 +368,7 @@ async def list_cxp(
             LEFT JOIN cont_tercero t ON cxp.proveedor_id = t.id
             LEFT JOIN cont_factura_proveedor fp ON cxp.factura_id = fp.id
             LEFT JOIN cont_marca m ON cxp.marca_id = m.id
+            LEFT JOIN cont_gasto g ON cxp.documento_referencia = g.numero AND g.empresa_id = cxp.empresa_id
             WHERE {' AND '.join(conditions)}
             ORDER BY
                 CASE WHEN cxp.estado::text IN ('pagado', 'anulada') THEN 1 ELSE 0 END,
@@ -395,6 +407,7 @@ async def cxp_resumen(empresa_id: int = Depends(get_empresa_id)):
                 ), 0) as por_vencer_7d
             FROM cont_cxp
             WHERE empresa_id = $1
+              AND COALESCE(monto_original, 0) > 0
         """, empresa_id)
 
         aging = await conn.fetch("""

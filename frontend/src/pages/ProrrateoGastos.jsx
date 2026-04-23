@@ -131,7 +131,7 @@ export default function ProrrateoGastos() {
       setPreviewData(null);
       loadData();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Error ejecutando prorrateo');
+      toast.error(typeof err.response?.data?.detail === 'string' ? err.response?.data?.detail : 'Error ejecutando prorrateo');
     }
   };
 

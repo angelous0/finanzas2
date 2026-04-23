@@ -49,7 +49,17 @@ const Marcas = () => {
             {loading ? (
               <div className="loading"><div className="loading-spinner"></div></div>
             ) : marcas.length === 0 ? (
-              <div className="empty-state"><Tag className="empty-state-icon" /><div className="empty-state-title">No hay marcas</div></div>
+              <div className="empty-state">
+                <Tag className="empty-state-icon" />
+                <div className="empty-state-title">No hay marcas</div>
+                <div className="empty-state-description" style={{ marginTop: '0.5rem', maxWidth: 480, textAlign: 'center' }}>
+                  Las marcas de Finanzas son independientes de las marcas de Producción.<br />
+                  Úsalas para agrupar ventas POS y reportes financieros por marca comercial.<br />
+                  <span style={{ fontSize: '0.75rem', color: 'var(--muted)' }}>
+                    Puedes crear una marca nueva con el botón <strong>Nueva Marca</strong>.
+                  </span>
+                </div>
+              </div>
             ) : (
               <table className="data-table" data-testid="marcas-table">
                 <thead><tr><th>Nombre</th><th>Codigo</th><th>Key Odoo</th><th>Estado</th><th className="text-center">Acciones</th></tr></thead>

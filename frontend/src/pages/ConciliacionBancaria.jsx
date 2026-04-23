@@ -13,7 +13,7 @@ import {
 import { toast } from 'sonner';
 
 const formatCurrency = (value, symbol = 'S/') => {
-  return `${symbol} ${Number(value || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}`;
+  return `${symbol} ${Number(value || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
 const formatDate = (dateStr) => {
@@ -154,7 +154,7 @@ export const ConciliacionBancaria = () => {
       setShowImportModal(false);
       setShowPreviewModal(true);
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Error al previsualizar Excel');
+      toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error al previsualizar Excel');
     } finally {
       setImporting(false);
     }
@@ -179,7 +179,7 @@ export const ConciliacionBancaria = () => {
       setPreviewData(null);
       loadMovimientos();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Error al importar Excel');
+      toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error al importar Excel');
     } finally {
       setImporting(false);
     }
@@ -268,7 +268,7 @@ export const ConciliacionBancaria = () => {
       await loadMovimientos();
     } catch (error) {
       console.error('Error al crear gasto:', error);
-      toast.error(error.response?.data?.detail || 'Error al crear gasto');
+      toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error al crear gasto');
     } finally {
       setLoading(false);
     }

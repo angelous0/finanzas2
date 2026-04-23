@@ -231,21 +231,30 @@ async def _sync_odoo_to_local(conn, empresa_id: int, company_key: str, fecha_des
     logger.info(f"Orders sync: {order_result}")
 
     # 2. Sync lines using pos_order_line table directly (faster than v_pos_line_full view)
+    #    La línea efectiva de negocio (linea_negocio_id) prioriza la clasificación
+    #    hecha en Producción (prod_odoo_productos_enriq) sobre la de Odoo.
     line_result = await conn.execute("""
         INSERT INTO finanzas2.cont_venta_pos_linea
             (empresa_id, venta_pos_id, odoo_line_id, product_id, product_name, product_code,
              qty, price_unit, price_subtotal, price_subtotal_incl, discount, marca, tipo,
-             odoo_linea_negocio_id, odoo_linea_negocio_nombre)
+             odoo_linea_negocio_id, odoo_linea_negocio_nombre,
+             linea_negocio_id, linea_negocio_nombre)
         SELECT $1, v.id, l.odoo_id, l.product_id,
                COALESCE(pt.name, pp.barcode, '-'), pp.barcode,
                l.qty, l.price_unit, l.price_subtotal, l.price_unit * l.qty,
                l.discount,
                pt.marca, pt.tipo_resumen,
-               pt.linea_negocio_id, pt.linea_negocio
+               pt.linea_negocio_id, pt.linea_negocio,
+               -- Línea efectiva: prioriza Producción, fallback a Odoo
+               COALESCE(enriq.linea_negocio_id, pt.linea_negocio_id) AS linea_efectiva_id,
+               COALESCE(ln_prod.nombre, pt.linea_negocio) AS linea_efectiva_nombre
         FROM odoo.pos_order_line l
         JOIN finanzas2.cont_venta_pos v ON v.odoo_id = l.order_id AND v.empresa_id = $1
         LEFT JOIN odoo.product_product pp ON pp.odoo_id = l.product_id AND pp.company_key = 'GLOBAL'
         LEFT JOIN odoo.product_template pt ON pt.odoo_id = pp.product_tmpl_id
+        LEFT JOIN produccion.prod_odoo_productos_enriq enriq
+               ON enriq.odoo_template_id = pt.odoo_id AND enriq.empresa_id = $1
+        LEFT JOIN finanzas2.cont_linea_negocio ln_prod ON ln_prod.id = enriq.linea_negocio_id
         WHERE l.company_key = $2
           AND l.order_id IN (SELECT odoo_id FROM finanzas2.cont_venta_pos WHERE empresa_id = $1)
         ON CONFLICT (empresa_id, odoo_line_id) DO UPDATE SET
@@ -259,7 +268,9 @@ async def _sync_odoo_to_local(conn, empresa_id: int, company_key: str, fecha_des
             marca = EXCLUDED.marca,
             tipo = EXCLUDED.tipo,
             odoo_linea_negocio_id = EXCLUDED.odoo_linea_negocio_id,
-            odoo_linea_negocio_nombre = EXCLUDED.odoo_linea_negocio_nombre
+            odoo_linea_negocio_nombre = EXCLUDED.odoo_linea_negocio_nombre,
+            linea_negocio_id = EXCLUDED.linea_negocio_id,
+            linea_negocio_nombre = EXCLUDED.linea_negocio_nombre
     """, empresa_id, company_key)
     logger.info(f"Lines sync: {line_result}")
 

@@ -9,12 +9,13 @@ import {
   DollarSign, ShoppingCart
 } from 'lucide-react';
 
-const fmt = (v) => `S/ ${Number(v || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}`;
+const fmt = (v) => `S/ ${Number(v || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 export default function Dashboard() {
   const [data, setData] = useState(null);
   const [cifData, setCifData] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [showAllLineas, setShowAllLineas] = useState(false);
   const { empresaActual } = useEmpresa();
   const navigate = useNavigate();
 
@@ -182,7 +183,21 @@ export default function Dashboard() {
       <div className="rounded-xl border border-border bg-card shadow-sm">
         <div className="flex items-center justify-between px-5 py-4 border-b border-border">
           <h2 className="text-sm font-semibold text-foreground">Utilidad por Linea de Negocio</h2>
-          <span className="text-xs text-muted-foreground px-2 py-1 rounded-md bg-muted">Mes actual</span>
+          <div className="flex items-center gap-2">
+            {data.utilidad_linea?.some(l =>
+              (l.ingresos || 0) === 0 && (l.egresos_proveedores || 0) === 0 &&
+              (l.gastos_directos || 0) === 0 && (l.gastos_prorrateados || 0) === 0
+            ) && (
+              <button
+                onClick={() => setShowAllLineas(v => !v)}
+                className="text-xs text-blue-600 hover:underline"
+                data-testid="toggle-lineas-vacias"
+              >
+                {showAllLineas ? 'Ocultar líneas sin movimientos' : 'Mostrar todas'}
+              </button>
+            )}
+            <span className="text-xs text-muted-foreground px-2 py-1 rounded-md bg-muted">Mes actual</span>
+          </div>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm" data-testid="utilidad-linea-table">
@@ -198,7 +213,14 @@ export default function Dashboard() {
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
-              {data.utilidad_linea?.length > 0 ? data.utilidad_linea.map((l, i) => (
+              {(() => {
+                const lineasFiltradas = showAllLineas
+                  ? (data.utilidad_linea || [])
+                  : (data.utilidad_linea || []).filter(l =>
+                      (l.ingresos || 0) !== 0 || (l.egresos_proveedores || 0) !== 0 ||
+                      (l.gastos_directos || 0) !== 0 || (l.gastos_prorrateados || 0) !== 0
+                    );
+                return lineasFiltradas.length > 0 ? lineasFiltradas.map((l, i) => (
                 <tr key={i} className="hover:bg-muted/30 transition-colors">
                   <td className="px-5 py-3 font-medium text-foreground">{l.linea_nombre}</td>
                   <td className="px-4 py-3 text-right text-emerald-600">{fmt(l.ingresos)}</td>
@@ -218,7 +240,8 @@ export default function Dashboard() {
                     Sin movimientos este mes
                   </td>
                 </tr>
-              )}
+              );
+              })()}
             </tbody>
             {data.utilidad_linea?.length > 0 && (
               <tfoot>

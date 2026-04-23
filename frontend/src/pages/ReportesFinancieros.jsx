@@ -1,13 +1,16 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { RefreshCw, Scale, TrendingUp, Banknote, Package, ArrowUpRight, ArrowDownRight, Minus, ChevronRight, ChevronDown, BarChart3, Clock, Users, Download, DollarSign, CreditCard, Wallet } from 'lucide-react';
+import { RefreshCw, Scale, TrendingUp, Banknote, Package, ArrowUpRight, ArrowDownRight, Minus, ChevronRight, ChevronDown, BarChart3, Clock, Users, Download, DollarSign, CreditCard, Wallet, Layout, Tag, Target, TrendingDown } from 'lucide-react';
 import {
   getReporteBalanceGeneral, getReporteEstadoResultados,
-  getReporteFlujoCaja, getReporteInventarioValorizado,
-  getReporteRentabilidadLinea, getReporteCxpAging, getReporteCxcAging,
+  getReporteInventarioValorizado,
+  getReporteCxpAging, getReporteCxcAging,
   getFlujoCajaGerencial,
   getReporteVentasPorLinea, getReporteCobranzaPorLinea2,
   getReporteCruceLineaMarca, getReporteGastosDirectosPorLinea,
-  getReporteDineroPorLinea
+  getReporteDineroPorLinea,
+  getReporteVentasPendientes, getReporteIngresosPorMarca,
+  getReportePendienteCobrar, getReporteGastosPorCategoria,
+  getReporteGastosPorCentro, getReporteUtilidadPorLinea
 } from '../services/api';
 import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
@@ -16,7 +19,7 @@ import {
   Legend, Line, ComposedChart
 } from 'recharts';
 
-const fmt = (v) => `S/ ${Number(v || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}`;
+const fmt = (v) => `S/ ${Number(v || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtNum = (v) => Number(v || 0).toFixed(2);
 
 function exportRentabilidadDetallado(data, subTab) {
@@ -121,6 +124,7 @@ function exportCxcAging(data) {
   toast.success('Excel exportado');
 }
 const TABS = [
+  { id: 'resumen', label: 'Resumen', icon: Layout },
   { id: 'balance', label: 'Balance General', icon: Scale },
   { id: 'egyp', label: 'Estado de Resultados', icon: TrendingUp },
   { id: 'flujo', label: 'Flujo de Caja', icon: Banknote },
@@ -139,7 +143,7 @@ const SUB_TABS_RENT = [
 ];
 
 export default function ReportesFinancieros() {
-  const [tab, setTab] = useState('balance');
+  const [tab, setTab] = useState('resumen');
   const [rentSubTab, setRentSubTab] = useState('dinero');
   const [agrupacion, setAgrupacion] = useState('diario');
   const [fechaDesde, setFechaDesde] = useState(() => {
@@ -149,7 +153,7 @@ export default function ReportesFinancieros() {
   const [loading, setLoading] = useState(true);
   const [data, setData] = useState({});
 
-  const needsDates = tab === 'egyp' || tab === 'flujo' || tab === 'rentabilidad';
+  const needsDates = tab === 'egyp' || tab === 'flujo' || tab === 'rentabilidad' || tab === 'resumen';
   const needsCorte = tab === 'balance' || tab === 'cxp_aging' || tab === 'cxc_aging';
 
   const load = useCallback(async () => {
@@ -160,6 +164,21 @@ export default function ReportesFinancieros() {
       if (needsCorte) params = { fecha_corte: fechaHasta };
       let result;
       switch (tab) {
+        case 'resumen': {
+          const [vp, im, pc, gc, gcc, ul] = await Promise.all([
+            getReporteVentasPendientes(),
+            getReporteIngresosPorMarca(params),
+            getReportePendienteCobrar(),
+            getReporteGastosPorCategoria(params),
+            getReporteGastosPorCentro(params),
+            getReporteUtilidadPorLinea(params),
+          ]);
+          result = { data: {
+            ventasPend: vp.data, ingresoMarca: im.data, pendienteCobrar: pc.data,
+            gastoCategoria: gc.data, gastoCentro: gcc.data, utilidadLinea: ul.data,
+          } };
+          break;
+        }
         case 'balance':
           result = await getReporteBalanceGeneral(params);
           break;
@@ -289,6 +308,7 @@ export default function ReportesFinancieros() {
         <div className="loading"><div className="loading-spinner"></div></div>
       ) : (
         <>
+          {tab === 'resumen' && <ResumenEjecutivo data={data.resumen} />}
           {tab === 'balance' && <BalanceGeneral data={data.balance} />}
           {tab === 'egyp' && <EstadoResultados data={data.egyp} />}
           {tab === 'flujo' && <FlujoCajaChart data={data.flujo} agrupacion={agrupacion} />}
@@ -402,9 +422,9 @@ function EstadoResultados({ data }) {
     { label: '(-) Costo MP Consumida', value: -data.costo_venta.mp_consumida, color: '#ef4444', indent: 1 },
     { label: '(-) Costo Servicios', value: -data.costo_venta.servicios, color: '#ef4444', indent: 1 },
     { label: 'Costo de Venta Total', value: -data.costo_venta.total, color: '#ef4444', bold: true, indent: 0, separator: true },
-    { label: 'MARGEN BRUTO', value: data.margen_bruto, color: data.margen_bruto >= 0 ? '#166534' : '#991b1b', bold: true, indent: 0, highlight: true },
+    { label: 'MARGEN BRUTO', value: data.margen_bruto, color: data.margen_bruto >= 0 ? '#166534' : '#991b1b', bold: true, indent: 0, highlight: true, negative: data.margen_bruto < 0 },
     { label: '(-) Gastos Operativos', value: -data.gastos_operativos.total, color: '#ef4444', bold: true, indent: 0 },
-    { label: 'UTILIDAD OPERATIVA', value: data.utilidad_operativa, color: data.utilidad_operativa >= 0 ? '#166534' : '#991b1b', bold: true, indent: 0, highlight: true },
+    { label: 'UTILIDAD OPERATIVA', value: data.utilidad_operativa, color: data.utilidad_operativa >= 0 ? '#166534' : '#991b1b', bold: true, indent: 0, highlight: true, negative: data.utilidad_operativa < 0 },
   ];
 
   const pctMargen = data.ventas.total > 0 ? ((data.margen_bruto / data.ventas.total) * 100).toFixed(1) : '0.0';
@@ -433,12 +453,12 @@ function EstadoResultados({ data }) {
               <div key={i} style={{
                 display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                 padding: `0.4rem ${1 + l.indent * 0.75}rem 0.4rem 1rem`,
-                background: l.highlight ? '#f0fdf4' : 'transparent',
+                background: l.highlight ? (l.negative ? '#fef2f2' : '#f0fdf4') : 'transparent',
                 borderTop: l.separator ? '1px solid #e2e8f0' : 'none',
-                borderBottom: l.highlight ? '1px solid #dcfce7' : 'none',
+                borderBottom: l.highlight ? (l.negative ? '1px solid #fecaca' : '1px solid #dcfce7') : 'none',
               }}>
                 <span style={{ fontSize: '0.8rem', fontWeight: l.bold ? 700 : 400, color: l.indent ? 'var(--muted)' : 'var(--text-primary)' }}>{l.label}</span>
-                <span style={{ fontSize: '0.8rem', fontWeight: l.bold ? 700 : 500, color: l.color }}>{fmt(Math.abs(l.value))}</span>
+                <span style={{ fontSize: '0.8rem', fontWeight: l.bold ? 700 : 500, color: l.color }}>{l.negative ? '-' : ''}{fmt(Math.abs(l.value))}</span>
               </div>
             ))}
           </div>
@@ -1176,6 +1196,88 @@ function Empty() {
     <div style={{ textAlign: 'center', padding: '3rem 1rem', color: 'var(--muted)' }}>
       <Minus size={40} style={{ margin: '0 auto 0.5rem', opacity: 0.3 }} />
       <p style={{ fontSize: '0.875rem' }}>Sin datos disponibles</p>
+    </div>
+  );
+}
+
+/* ========== RESUMEN EJECUTIVO (reemplaza ReportesSimplificados) ========== */
+function ResumenEjecutivo({ data }) {
+  if (!data) return <Empty />;
+  return (
+    <div data-testid="resumen-ejecutivo-content">
+      {/* Row 1: Ventas Pendientes + Utilidad por Linea */}
+      <div style={{ display: 'grid', gridTemplateColumns: '280px 1fr', gap: '1rem', marginBottom: '1rem' }}>
+        <ResumenCard title="Ventas Pendientes" icon={BarChart3} testId="rep-ventas-pend">
+          <div style={{ textAlign: 'center', padding: '0.75rem 0' }}>
+            <div style={{ fontSize: '2rem', fontWeight: 700, color: '#f59e0b' }}>{data.ventasPend?.cantidad || 0}</div>
+            <div style={{ fontSize: '0.8rem', color: 'var(--muted)' }}>por revisar</div>
+            <div style={{ fontSize: '1.1rem', fontWeight: 600, marginTop: '0.25rem' }}>{fmt(data.ventasPend?.monto)}</div>
+          </div>
+        </ResumenCard>
+        <ResumenCard title="Utilidad por Linea de Negocio" icon={TrendingUp} testId="rep-utilidad">
+          <SimpleTable
+            headers={['Linea', 'Ingresos', 'Costos Prov.', 'G. Directos', 'Util. (antes)', 'Prorrateo', 'Util. (despues)']}
+            rows={data.utilidadLinea?.map(r => [
+              r.linea,
+              { v: fmt(r.ingresos), color: '#22c55e' },
+              { v: fmt(r.egresos_proveedores || 0), color: '#f97316' },
+              { v: fmt(r.gastos_directos), color: '#ef4444' },
+              { v: fmt(r.utilidad_antes), color: r.utilidad_antes >= 0 ? '#166534' : '#991b1b', bold: true },
+              { v: fmt(r.gastos_prorrateados), color: '#8b5cf6' },
+              { v: fmt(r.utilidad_despues), color: r.utilidad_despues >= 0 ? '#166534' : '#991b1b', bold: true },
+            ]) || []}
+            testId="utilidad-table"
+          />
+        </ResumenCard>
+      </div>
+
+      {/* Row 2: Ingresos por Marca + Pendiente Cobrar */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem', marginBottom: '1rem' }}>
+        <ResumenCard title="Ingresos por Marca" icon={Tag} testId="rep-ing-marca">
+          <SimpleTable
+            headers={['Marca', 'Ingresos']}
+            rows={data.ingresoMarca?.map(r => [r.marca, { v: fmt(r.ingresos), color: '#22c55e', bold: true }]) || []}
+            testId="ing-marca-table"
+          />
+        </ResumenCard>
+        <ResumenCard title="Pendiente por Cobrar" icon={TrendingDown} testId="rep-pend-cobrar">
+          <SimpleTable
+            headers={['Linea', 'Pendiente']}
+            rows={data.pendienteCobrar?.map(r => [r.linea || 'Sin clasificar', { v: fmt(r.pendiente), color: '#ef4444', bold: true }]) || []}
+            testId="pend-cobrar-table"
+          />
+        </ResumenCard>
+      </div>
+
+      {/* Row 3: Gastos por Categoria + Gastos por Centro */}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+        <ResumenCard title="Gastos por Categoria" icon={Wallet} testId="rep-gasto-cat">
+          <SimpleTable
+            headers={['Categoria', 'Cant.', 'Monto']}
+            rows={data.gastoCategoria?.map(r => [r.categoria, r.cantidad, { v: fmt(r.monto), color: '#ef4444', bold: true }]) || []}
+            testId="gasto-cat-table"
+          />
+        </ResumenCard>
+        <ResumenCard title="Gastos por Centro de Costo" icon={Target} testId="rep-gasto-cc">
+          <SimpleTable
+            headers={['Centro', 'Cant.', 'Monto']}
+            rows={data.gastoCentro?.map(r => [r.centro_costo, r.cantidad, { v: fmt(r.monto), color: '#ef4444', bold: true }]) || []}
+            testId="gasto-cc-table"
+          />
+        </ResumenCard>
+      </div>
+    </div>
+  );
+}
+
+function ResumenCard({ title, icon: Icon, children, testId }) {
+  return (
+    <div style={{ background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: '8px', overflow: 'hidden' }} data-testid={testId}>
+      <div style={{ padding: '0.75rem 1rem', borderBottom: '1px solid var(--table-row-border)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+        <Icon size={16} color="#64748b" />
+        <h3 style={{ fontSize: '0.8125rem', fontWeight: 600, margin: 0, color: 'var(--text-secondary)' }}>{title}</h3>
+      </div>
+      <div style={{ padding: '0.5rem' }}>{children}</div>
     </div>
   );
 }

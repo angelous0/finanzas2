@@ -41,7 +41,7 @@ const VincularIngresosModal = ({ show, factura, onClose, onDataChanged }) => {
       const res = await getIngresosDisponibles(factura.id, linea.id);
       setIngresosData(res.data);
     } catch (e) {
-      toast.error(e.response?.data?.detail || 'Error al cargar ingresos');
+      toast.error(typeof e.response?.data?.detail === 'string' ? e.response?.data?.detail : 'Error al cargar ingresos');
     } finally {
       setLoading(false);
     }
@@ -64,7 +64,7 @@ const VincularIngresosModal = ({ show, factura, onClose, onDataChanged }) => {
       await Promise.all([loadVinculaciones(), loadIngresos(selectedLinea)]);
       if (onDataChanged) onDataChanged();
     } catch (e) {
-      toast.error(e.response?.data?.detail || 'Error al vincular');
+      toast.error(typeof e.response?.data?.detail === 'string' ? e.response?.data?.detail : 'Error al vincular');
     } finally {
       setSubmitting(prev => ({ ...prev, [ingreso.id]: false }));
     }
@@ -78,7 +78,7 @@ const VincularIngresosModal = ({ show, factura, onClose, onDataChanged }) => {
       if (selectedLinea) await loadIngresos(selectedLinea);
       if (onDataChanged) onDataChanged();
     } catch (e) {
-      toast.error(e.response?.data?.detail || 'Error al desvincular');
+      toast.error(typeof e.response?.data?.detail === 'string' ? e.response?.data?.detail : 'Error al desvincular');
     }
   };
 

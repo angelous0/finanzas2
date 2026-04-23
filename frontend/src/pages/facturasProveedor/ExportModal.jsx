@@ -37,11 +37,11 @@ const ExportModal = ({ show, onClose }) => {
           if (parsed.detail?.errors) {
             toast.error(`${parsed.detail.message}:\n${parsed.detail.errors.slice(0, 3).join('\n')}`);
           } else {
-            toast.error(parsed.detail?.message || parsed.detail || 'Error al exportar');
+            toast.error(parsed.detail?.message || (typeof parsed.detail === 'string' ? parsed.detail : 'Error al exportar'));
           }
         } catch { toast.error('Error al exportar CompraAPP'); }
       } else {
-        toast.error(detail?.detail?.message || detail?.detail || 'Error al exportar CompraAPP');
+        toast.error(detail?.detail?.message || (typeof detail?.detail === 'string' ? detail?.detail : 'Error al exportar CompraAPP'));
       }
     } finally {
       setExporting(false);

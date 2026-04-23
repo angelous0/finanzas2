@@ -66,7 +66,7 @@ export default function GastosUnidadInterna() {
       setForm({ fecha: new Date().toISOString().slice(0, 10), unidad_interna_id: '', tipo_gasto: '', descripcion: '', monto: '', registro_id: '', movimiento_id: '' });
       loadData();
     } catch (e) {
-      toast.error(e.response?.data?.detail || 'Error al guardar');
+      toast.error(typeof e.response?.data?.detail === 'string' ? e.response?.data?.detail : 'Error al guardar');
     }
   };
 

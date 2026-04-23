@@ -7,8 +7,19 @@ from fastapi import APIRouter, Depends, Query
 from database import get_pool
 from dependencies import get_empresa_id
 from typing import Optional
+from datetime import date as _date, datetime as _datetime
 
 router = APIRouter(tags=["movimientos-produccion"])
+
+
+def _parse_date(s: Optional[str]) -> Optional[_date]:
+    """Convierte 'YYYY-MM-DD' a date; devuelve None si está vacío o inválido."""
+    if not s:
+        return None
+    try:
+        return _datetime.strptime(s, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        return None
 
 
 @router.get("/movimientos-produccion")
@@ -18,6 +29,8 @@ async def get_movimientos_produccion(
     fecha_hasta: Optional[str] = Query(None),
     tipo: Optional[str] = Query(None),  # servicio|ingreso_mp|entrega_pt
 ):
+    d_desde = _parse_date(fecha_desde)
+    d_hasta = _parse_date(fecha_hasta)
     pool = await get_pool()
     async with pool.acquire() as conn:
         items = []
@@ -29,12 +42,12 @@ async def get_movimientos_produccion(
             date_filter = ""
             params = [empresa_id]
             idx = 2
-            if fecha_desde:
-                date_filter += f" AND mp.fecha_inicio >= ${idx}::date"
-                params.append(fecha_desde); idx += 1
-            if fecha_hasta:
-                date_filter += f" AND mp.fecha_inicio <= ${idx}::date"
-                params.append(fecha_hasta); idx += 1
+            if d_desde:
+                date_filter += f" AND mp.fecha_inicio >= ${idx}"
+                params.append(d_desde); idx += 1
+            if d_hasta:
+                date_filter += f" AND mp.fecha_inicio <= ${idx}"
+                params.append(d_hasta); idx += 1
 
             rows = await conn.fetch(f"""
                 SELECT
@@ -82,12 +95,12 @@ async def get_movimientos_produccion(
             date_filter = ""
             params = [empresa_id]
             idx = 2
-            if fecha_desde:
-                date_filter += f" AND i.fecha >= ${idx}::date"
-                params.append(fecha_desde); idx += 1
-            if fecha_hasta:
-                date_filter += f" AND i.fecha <= ${idx}::date"
-                params.append(fecha_hasta); idx += 1
+            if d_desde:
+                date_filter += f" AND i.fecha >= ${idx}"
+                params.append(d_desde); idx += 1
+            if d_hasta:
+                date_filter += f" AND i.fecha <= ${idx}"
+                params.append(d_hasta); idx += 1
 
             rows = await conn.fetch(f"""
                 SELECT
@@ -125,12 +138,12 @@ async def get_movimientos_produccion(
             date_filter = ""
             params = [empresa_id]
             idx = 2
-            if fecha_desde:
-                date_filter += f" AND r.fecha_creacion >= ${idx}::date"
-                params.append(fecha_desde); idx += 1
-            if fecha_hasta:
-                date_filter += f" AND r.fecha_creacion <= ${idx}::date"
-                params.append(fecha_hasta); idx += 1
+            if d_desde:
+                date_filter += f" AND r.fecha_creacion >= ${idx}"
+                params.append(d_desde); idx += 1
+            if d_hasta:
+                date_filter += f" AND r.fecha_creacion <= ${idx}"
+                params.append(d_hasta); idx += 1
 
             rows = await conn.fetch(f"""
                 SELECT
@@ -190,18 +203,20 @@ async def get_movimientos_produccion_finanzas(
     Movimientos individuales de prod_movimientos_produccion con estado de facturación.
     Usado en Finanzas → pestaña Servicios de Movimientos de Producción.
     """
+    d_desde = _parse_date(fecha_desde)
+    d_hasta = _parse_date(fecha_hasta)
     pool = await get_pool()
     async with pool.acquire() as conn:
         date_filter = ""
         params = [empresa_id]
         idx = 2
 
-        if fecha_desde:
-            date_filter += f" AND mp.fecha_inicio >= ${idx}::date"
-            params.append(fecha_desde); idx += 1
-        if fecha_hasta:
-            date_filter += f" AND mp.fecha_inicio <= ${idx}::date"
-            params.append(fecha_hasta); idx += 1
+        if d_desde:
+            date_filter += f" AND mp.fecha_inicio >= ${idx}"
+            params.append(d_desde); idx += 1
+        if d_hasta:
+            date_filter += f" AND mp.fecha_inicio <= ${idx}"
+            params.append(d_hasta); idx += 1
         if persona_nombre:
             date_filter += f" AND p.nombre ILIKE ${idx}"
             params.append(f"%{persona_nombre}%"); idx += 1

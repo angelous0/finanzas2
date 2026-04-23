@@ -5,7 +5,7 @@ import { Trash2, DollarSign, TrendingUp, TrendingDown, Edit2, X, AlertTriangle }
 import { toast } from 'sonner';
 
 const formatCurrency = (value, symbol = 'S/') => {
-  return `${symbol} ${Number(value || 0).toLocaleString('es-PE', { minimumFractionDigits: 2 })}`;
+  return `${symbol} ${Number(value || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 };
 
 const formatDate = (dateStr) => {
@@ -65,7 +65,7 @@ export const Pagos = () => {
       setShowEditModal(false);
       loadData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Error al actualizar pago');
+      toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error al actualizar pago');
     } finally {
       setSubmitting(false);
     }
@@ -84,7 +84,7 @@ export const Pagos = () => {
       toast.success('Pago eliminado y revertido');
       loadData();
     } catch (error) {
-      toast.error(error.response?.data?.detail || 'Error al eliminar pago');
+      toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error al eliminar pago');
     }
   };
 
@@ -188,8 +188,12 @@ export const Pagos = () => {
                             Conciliado
                           </span>
                         ) : (
-                          <span className="badge" style={{ fontSize: '0.75rem', background: 'var(--border)', color: 'var(--muted)' }}>
-                            Pendiente
+                          <span
+                            className="badge"
+                            style={{ fontSize: '0.75rem', background: '#fef3c7', color: '#92400e' }}
+                            title="Pago registrado, pendiente de conciliar con movimiento bancario"
+                          >
+                            Por Conciliar
                           </span>
                         )}
                       </td>

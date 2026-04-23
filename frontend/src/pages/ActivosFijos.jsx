@@ -128,7 +128,7 @@ export default function ActivosFijos() {
       setShowModal(false);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Error guardando');
+      toast.error(typeof err.response?.data?.detail === 'string' ? err.response?.data?.detail : 'Error guardando');
     } finally {
       setSaving(false);
     }
@@ -160,7 +160,7 @@ export default function ActivosFijos() {
       load();
       if (showDepModal) openDepreciacion(showDepModal);
     } catch (err) {
-      toast.error(err.response?.data?.detail || 'Error calculando depreciacion');
+      toast.error(typeof err.response?.data?.detail === 'string' ? err.response?.data?.detail : 'Error calculando depreciacion');
     }
   };
 
