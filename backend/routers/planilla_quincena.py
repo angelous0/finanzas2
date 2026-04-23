@@ -36,6 +36,10 @@ async def get_current_user():
 
 router = APIRouter(tags=["Planilla Quincena"])
 
+# Los montos legales (AFP, asig familiar) son MENSUALES.
+# En planilla quincenal se descuenta la mitad en cada quincena.
+FACTOR_QUINCENA = 0.5
+
 
 # ───────── MODELS ─────────
 
@@ -121,15 +125,20 @@ def calcular_linea(det: dict, ajustes: dict, afp: Optional[dict]) -> dict:
 
     sueldo_min = float(ajustes.get('sueldo_minimo') or 0)
     asig_pct = float(ajustes.get('asignacion_familiar_pct') or 0) / 100
-    asig_monto = round(sueldo_min * asig_pct, 2) if asig_familiar else 0
+    # Asignación familiar MENSUAL, dividida por quincena
+    asig_monto_mensual = round(sueldo_min * asig_pct, 2) if asig_familiar else 0
+    asig_monto = round(asig_monto_mensual * FACTOR_QUINCENA, 2)
 
-    # AFP solo si tiene sueldo_planilla > 0 y afp asignada
+    # AFP: se calcula sobre la remuneración MENSUAL y luego se divide para quincena.
+    # Solo si tiene sueldo_planilla > 0 y afp asignada.
     afp_aporte = 0.0
     afp_prima = 0.0
     if sueldo_planilla > 0 and afp:
-        base = sueldo_planilla + asig_monto
-        afp_aporte = round(base * float(afp['aporte_obligatorio_pct']) / 100, 2)
-        afp_prima = round(base * float(afp['prima_seguro_pct']) / 100, 2)
+        base_mensual = sueldo_planilla + asig_monto_mensual
+        afp_aporte_mensual = round(base_mensual * float(afp['aporte_obligatorio_pct']) / 100, 2)
+        afp_prima_mensual = round(base_mensual * float(afp['prima_seguro_pct']) / 100, 2)
+        afp_aporte = round(afp_aporte_mensual * FACTOR_QUINCENA, 2)
+        afp_prima = round(afp_prima_mensual * FACTOR_QUINCENA, 2)
     afp_total = round(afp_aporte + afp_prima, 2)
 
     neto = round(subtotal_horas + asig_monto - afp_total - tardanzas - adelantos, 2)

@@ -293,6 +293,31 @@ export default function PlanillaQuincenaWizard() {
       {/* PASO 2 — Tabla editable */}
       {step === 2 && (
         <div className="space-y-4">
+          {/* Header del período con KPIs */}
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
+            <div className="bg-card rounded-lg border border-border p-3">
+              <div className="text-[10px] uppercase text-muted-foreground tracking-wider">Período</div>
+              <div className="text-sm font-semibold mt-0.5">{MESES[mes-1]} {anio} · Q{quincena}</div>
+              <div className="text-[10px] text-muted-foreground mt-0.5">{fmtDate(fechas.inicio)} — {fmtDate(fechas.fin)}</div>
+            </div>
+            <div className="bg-card rounded-lg border border-border p-3">
+              <div className="text-[10px] uppercase text-muted-foreground tracking-wider">Trabajadores</div>
+              <div className="text-lg font-bold mt-0.5">{lineas.length}</div>
+            </div>
+            <div className="bg-card rounded-lg border border-border p-3">
+              <div className="text-[10px] uppercase text-muted-foreground tracking-wider">Bruto horas</div>
+              <div className="text-lg font-bold text-emerald-700 dark:text-emerald-400 font-mono mt-0.5">{fmt(totales.bruto)}</div>
+            </div>
+            <div className="bg-card rounded-lg border border-border p-3">
+              <div className="text-[10px] uppercase text-muted-foreground tracking-wider">Descuentos</div>
+              <div className="text-lg font-bold text-red-600 font-mono mt-0.5">{fmt(totales.afp + totales.tardanzas + totales.adelantos)}</div>
+            </div>
+            <div className="bg-emerald-500/5 rounded-lg border border-emerald-500/30 p-3">
+              <div className="text-[10px] uppercase text-emerald-700 dark:text-emerald-400 tracking-wider font-semibold">Total neto</div>
+              <div className="text-xl font-bold text-emerald-700 dark:text-emerald-400 font-mono mt-0.5">{fmt(totales.neto)}</div>
+            </div>
+          </div>
+
           {warnings.length > 0 && (
             <div className="bg-amber-500/5 border border-amber-500/20 rounded-md p-3 flex items-start gap-2">
               <AlertTriangle size={16} className="text-amber-600 mt-0.5 shrink-0"/>
@@ -305,89 +330,131 @@ export default function PlanillaQuincenaWizard() {
             </div>
           )}
 
-          <div className="rounded-xl border border-border bg-card overflow-x-auto">
-            <table className="w-full text-xs">
-              <thead className="bg-muted/40 border-b border-border">
-                <tr>
-                  <th className="text-left px-2 py-2 font-medium uppercase text-[10px]">Trabajador</th>
-                  <th className="text-right px-2 py-2 font-medium uppercase text-[10px]">Sueldo</th>
-                  <th className="text-center px-1 py-2 font-medium uppercase text-[10px] w-16">H.Norm</th>
-                  <th className="text-center px-1 py-2 font-medium uppercase text-[10px] w-16">H.25%</th>
-                  <th className="text-center px-1 py-2 font-medium uppercase text-[10px] w-16">H.35%</th>
-                  <th className="text-right px-2 py-2 font-medium uppercase text-[10px]">Asig.Fam</th>
-                  <th className="text-right px-2 py-2 font-medium uppercase text-[10px]">AFP</th>
-                  <th className="text-right px-1 py-2 font-medium uppercase text-[10px] w-20">Tardanzas</th>
-                  <th className="text-right px-1 py-2 font-medium uppercase text-[10px] w-24">Adelantos</th>
-                  <th className="text-right px-2 py-2 font-medium uppercase text-[10px]">NETO</th>
+          <div className="text-[11px] text-muted-foreground italic">
+            💡 Los montos de <strong>Asig. Fam.</strong> y <strong>AFP</strong> ya están calculados como <strong>½ quincena</strong> (la mitad del mensual legal).
+          </div>
+
+          <div className="rounded-xl border border-border bg-card overflow-x-auto shadow-sm">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="bg-muted/50 border-b-2 border-border">
+                  <th className="text-left px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Trabajador</th>
+                  <th className="text-right px-3 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Sueldo mes</th>
+                  <th className="text-center px-2 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-20" title="Horas normales trabajadas en la quincena">
+                    H. Normales
+                  </th>
+                  <th className="text-center px-2 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-20">
+                    H. Extra 25%
+                  </th>
+                  <th className="text-center px-2 py-3 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground w-20">
+                    H. Extra 35%
+                  </th>
+                  <th className="text-right px-3 py-3 text-[11px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-400" title="Asignación familiar (½ quincena)">
+                    Asig. Fam.
+                  </th>
+                  <th className="text-right px-3 py-3 text-[11px] font-semibold uppercase tracking-wider text-red-600" title="AFP aporte + prima (½ quincena)">
+                    AFP
+                  </th>
+                  <th className="text-right px-2 py-3 text-[11px] font-semibold uppercase tracking-wider text-red-600 w-28">
+                    Tardanzas
+                  </th>
+                  <th className="text-right px-2 py-3 text-[11px] font-semibold uppercase tracking-wider text-red-600 w-32">
+                    Adelantos
+                  </th>
+                  <th className="text-right px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
+                    NETO
+                  </th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {lineas.map((l, idx) => (
-                  <tr key={l.trabajador_id} className="hover:bg-muted/20">
-                    <td className="px-2 py-2">
-                      <div className="font-medium">{l.nombre}</div>
-                      <div className="text-[10px] text-muted-foreground">{l.area}{l.unidad_interna_nombre ? ` · ${l.unidad_interna_nombre}` : ''}</div>
+                  <tr key={l.trabajador_id} className="hover:bg-muted/20 transition-colors">
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-2.5">
+                        <div className="h-8 w-8 rounded-full bg-gradient-to-br from-blue-500 to-emerald-500 flex items-center justify-center text-white text-[11px] font-semibold shrink-0">
+                          {(l.nombre || '?').substring(0, 2).toUpperCase()}
+                        </div>
+                        <div className="min-w-0">
+                          <div className="font-semibold text-sm truncate">{l.nombre}</div>
+                          <div className="text-[10px] text-muted-foreground truncate">
+                            {l.area}{l.unidad_interna_nombre ? ` · ${l.unidad_interna_nombre}` : ''}
+                          </div>
+                        </div>
+                      </div>
                     </td>
-                    <td className="px-2 py-2 text-right font-mono">{fmt(l.sueldo_basico_total)}</td>
-                    <td className="px-1 py-2">
+                    <td className="px-3 py-3 text-right">
+                      <div className="font-mono text-sm font-semibold">{fmt(l.sueldo_basico_total)}</div>
+                      <div className="text-[10px] text-muted-foreground font-mono">{fmt(l.hora_simple)}/h</div>
+                    </td>
+                    <td className="px-2 py-3">
                       {estado === 'borrador' ? (
                         <input type="number" step="0.5" value={l.horas_normales}
                           onChange={e => actualizarLinea(idx, 'horas_normales', e.target.value)}
-                          className="w-full px-1 py-1 text-xs text-center rounded border border-border bg-background font-mono" />
+                          className="w-full px-2 py-1.5 text-sm text-center rounded-md border border-border bg-background font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
                       ) : (
-                        <div className="text-center font-mono">{l.horas_normales}</div>
+                        <div className="text-center font-mono text-sm">{l.horas_normales}</div>
                       )}
-                      <div className="text-[9px] text-muted-foreground text-center mt-0.5 font-mono">{fmt(l.hora_simple)}/h</div>
                     </td>
-                    <td className="px-1 py-2">
+                    <td className="px-2 py-3">
                       {estado === 'borrador' ? (
                         <input type="number" step="0.5" value={l.horas_extra_25}
                           onChange={e => actualizarLinea(idx, 'horas_extra_25', e.target.value)}
-                          className="w-full px-1 py-1 text-xs text-center rounded border border-border bg-background font-mono" />
-                      ) : <div className="text-center font-mono">{l.horas_extra_25}</div>}
+                          className="w-full px-2 py-1.5 text-sm text-center rounded-md border border-border bg-background font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                      ) : <div className="text-center font-mono text-sm">{l.horas_extra_25}</div>}
                     </td>
-                    <td className="px-1 py-2">
+                    <td className="px-2 py-3">
                       {estado === 'borrador' ? (
                         <input type="number" step="0.5" value={l.horas_extra_35}
                           onChange={e => actualizarLinea(idx, 'horas_extra_35', e.target.value)}
-                          className="w-full px-1 py-1 text-xs text-center rounded border border-border bg-background font-mono" />
-                      ) : <div className="text-center font-mono">{l.horas_extra_35}</div>}
+                          className="w-full px-2 py-1.5 text-sm text-center rounded-md border border-border bg-background font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                      ) : <div className="text-center font-mono text-sm">{l.horas_extra_35}</div>}
                     </td>
-                    <td className="px-2 py-2 text-right font-mono text-emerald-700">{fmt(l.asig_familiar_monto)}</td>
-                    <td className="px-2 py-2 text-right font-mono text-red-600">{fmt(l.afp_total)}</td>
-                    <td className="px-1 py-2">
+                    <td className="px-3 py-3 text-right font-mono text-sm text-emerald-700 dark:text-emerald-400">
+                      {fmt(l.asig_familiar_monto)}
+                    </td>
+                    <td className="px-3 py-3 text-right font-mono text-sm text-red-600">
+                      {fmt(l.afp_total)}
+                    </td>
+                    <td className="px-2 py-3">
                       {estado === 'borrador' ? (
                         <input type="number" step="0.01" min="0" value={l.descuento_tardanzas}
                           onChange={e => actualizarLinea(idx, 'descuento_tardanzas', e.target.value)}
-                          className="w-full px-1 py-1 text-xs text-right rounded border border-border bg-background font-mono" />
-                      ) : <div className="text-right font-mono">{fmt(l.descuento_tardanzas)}</div>}
+                          className="w-full px-2 py-1.5 text-sm text-right rounded-md border border-border bg-background font-mono focus:outline-none focus:ring-2 focus:ring-red-400" />
+                      ) : <div className="text-right font-mono text-sm">{fmt(l.descuento_tardanzas)}</div>}
                     </td>
-                    <td className="px-1 py-2">
+                    <td className="px-2 py-3">
                       <div className="flex items-center gap-1">
-                        <div className="flex-1 text-right font-mono text-red-600">{fmt(l.monto_adelantos)}</div>
+                        <div className={`flex-1 text-right font-mono text-sm ${parseFloat(l.monto_adelantos) > 0 ? 'text-red-600 font-semibold' : 'text-muted-foreground'}`}>
+                          {fmt(l.monto_adelantos)}
+                        </div>
                         {estado === 'borrador' && (
                           <button onClick={() => handleAbrirAdelantos(idx)}
-                            className="h-6 w-6 flex items-center justify-center rounded hover:bg-muted text-blue-600"
-                            title="Adelantos pendientes">
-                            <Plus size={12}/>
+                            className="h-7 w-7 flex items-center justify-center rounded-md bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 transition-colors"
+                            title="Ver/incluir adelantos pendientes">
+                            <Plus size={14}/>
                           </button>
                         )}
                       </div>
                     </td>
-                    <td className="px-2 py-2 text-right font-mono text-sm font-bold text-emerald-700 dark:text-emerald-400">
-                      {fmt(l.neto)}
+                    <td className="px-4 py-3 text-right">
+                      <div className="font-mono text-base font-bold text-emerald-700 dark:text-emerald-400">
+                        {fmt(l.neto)}
+                      </div>
                     </td>
                   </tr>
                 ))}
               </tbody>
-              <tfoot className="bg-muted/30 border-t-2 border-border">
-                <tr className="font-semibold text-[11px]">
-                  <td colSpan={5} className="px-2 py-2 text-right">TOTALES →</td>
-                  <td className="px-2 py-2 text-right font-mono text-emerald-700">{fmt(totales.asig)}</td>
-                  <td className="px-2 py-2 text-right font-mono text-red-600">{fmt(totales.afp)}</td>
-                  <td className="px-1 py-2 text-right font-mono text-red-600">{fmt(totales.tardanzas)}</td>
-                  <td className="px-1 py-2 text-right font-mono text-red-600">{fmt(totales.adelantos)}</td>
-                  <td className="px-2 py-2 text-right font-mono text-base font-bold text-emerald-700 dark:text-emerald-400">{fmt(totales.neto)}</td>
+              <tfoot className="bg-muted/40 border-t-2 border-border">
+                <tr className="font-semibold text-xs">
+                  <td colSpan={2} className="px-4 py-3 text-right uppercase tracking-wider text-muted-foreground">Totales →</td>
+                  <td colSpan={3}></td>
+                  <td className="px-3 py-3 text-right font-mono text-sm text-emerald-700 dark:text-emerald-400">{fmt(totales.asig)}</td>
+                  <td className="px-3 py-3 text-right font-mono text-sm text-red-600">{fmt(totales.afp)}</td>
+                  <td className="px-2 py-3 text-right font-mono text-sm text-red-600">{fmt(totales.tardanzas)}</td>
+                  <td className="px-2 py-3 text-right font-mono text-sm text-red-600">{fmt(totales.adelantos)}</td>
+                  <td className="px-4 py-3 text-right font-mono text-base font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-500/10">
+                    {fmt(totales.neto)}
+                  </td>
                 </tr>
               </tfoot>
             </table>
