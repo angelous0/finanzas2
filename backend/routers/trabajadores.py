@@ -31,13 +31,19 @@ class TrabajadorIn(BaseModel):
     unidad_interna_id: Optional[int] = None
     sueldo_planilla: float = Field(ge=0, default=0)
     sueldo_basico: float = Field(ge=0, default=0)
-    horas_quincenales: int = Field(gt=0, default=120)
+    horas_quincenales: int = Field(ge=0, default=120)
     asignacion_familiar: bool = False
     porcentaje_planilla: float = Field(default=100.00)
     afp_id: Optional[int] = None
     fecha_ingreso: Optional[date] = None
     activo: Optional[bool] = True
     notas: Optional[str] = None
+    # Planilla v4: destajo
+    tipo_pago: Optional[str] = 'planilla'       # planilla | destajo | mixto
+    prod_persona_id: Optional[str] = None        # link a prod_personas_produccion.id
+
+
+TIPOS_PAGO_VALIDOS = {'planilla', 'destajo', 'mixto'}
 
 
 def _validar(data: TrabajadorIn):
@@ -45,6 +51,8 @@ def _validar(data: TrabajadorIn):
         raise HTTPException(400, f"Área inválida. Use: {', '.join(AREAS_VALIDAS)}")
     if data.porcentaje_planilla not in (50.00, 100.00):
         raise HTTPException(400, "porcentaje_planilla debe ser 50 o 100")
+    if data.tipo_pago and data.tipo_pago not in TIPOS_PAGO_VALIDOS:
+        raise HTTPException(400, f"tipo_pago inválido. Use: {', '.join(TIPOS_PAGO_VALIDOS)}")
 
 
 def _calcular_derivados(row: dict, ajustes: dict, afp: Optional[dict]) -> dict:
@@ -209,8 +217,9 @@ async def create_trabajador(data: TrabajadorIn, empresa_id: int = Depends(get_em
                 empresa_id, dni, nombre, area, unidad_interna_id,
                 sueldo_planilla, sueldo_basico, horas_quincenales,
                 asignacion_familiar, porcentaje_planilla, afp_id,
-                fecha_ingreso, activo, notas
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+                fecha_ingreso, activo, notas,
+                tipo_pago, prod_persona_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
             RETURNING *
         """, empresa_id, data.dni, data.nombre, data.area.upper(),
              data.unidad_interna_id,
@@ -218,7 +227,9 @@ async def create_trabajador(data: TrabajadorIn, empresa_id: int = Depends(get_em
              data.asignacion_familiar, data.porcentaje_planilla, data.afp_id,
              data.fecha_ingreso,
              data.activo if data.activo is not None else True,
-             data.notas)
+             data.notas,
+             data.tipo_pago or 'planilla',
+             data.prod_persona_id)
         return await _enrich(conn, row, empresa_id)
 
 
@@ -241,8 +252,9 @@ async def update_trabajador(
                 horas_quincenales = $7, asignacion_familiar = $8,
                 porcentaje_planilla = $9, afp_id = $10,
                 fecha_ingreso = $11, activo = $12, notas = $13,
+                tipo_pago = $14, prod_persona_id = $15,
                 updated_at = NOW()
-            WHERE id = $14 AND empresa_id = $15
+            WHERE id = $16 AND empresa_id = $17
             RETURNING *
         """, data.dni, data.nombre, data.area.upper(),
              data.unidad_interna_id,
@@ -251,6 +263,8 @@ async def update_trabajador(
              data.fecha_ingreso,
              data.activo if data.activo is not None else True,
              data.notas,
+             data.tipo_pago or 'planilla',
+             data.prod_persona_id,
              trabajador_id, empresa_id)
         if not row:
             raise HTTPException(404, "Trabajador no encontrado")
@@ -337,3 +351,109 @@ async def delete_trabajador(trabajador_id: int, empresa_id: int = Depends(get_em
             # soft delete (nunca llega aquí porque DELETE devuelve "DELETE 0" si no encuentra)
             raise HTTPException(404, "Trabajador no encontrado")
         return {"message": "Trabajador eliminado"}
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  TARIFAS DESTAJO (por trabajador × servicio)
+# ═══════════════════════════════════════════════════════════════════
+
+class TarifaDestajoIn(BaseModel):
+    servicio_nombre: str
+    tarifa: float = Field(ge=0)
+
+
+@router.get("/trabajadores/{trabajador_id}/tarifas-destajo")
+async def list_tarifas_destajo(trabajador_id: int, empresa_id: int = Depends(get_empresa_id)):
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # Validar trabajador
+        t = await conn.fetchval(
+            "SELECT id FROM finanzas2.fin_trabajador WHERE id = $1 AND empresa_id = $2",
+            trabajador_id, empresa_id)
+        if not t:
+            raise HTTPException(404, "Trabajador no encontrado")
+        rows = await conn.fetch("""
+            SELECT id, trabajador_id, servicio_nombre, tarifa
+              FROM finanzas2.fin_trabajador_tarifa_destajo
+             WHERE trabajador_id = $1
+             ORDER BY servicio_nombre
+        """, trabajador_id)
+        return [dict(r) for r in rows]
+
+
+@router.put("/trabajadores/{trabajador_id}/tarifas-destajo")
+async def set_tarifas_destajo(
+    trabajador_id: int,
+    tarifas: list[TarifaDestajoIn],
+    empresa_id: int = Depends(get_empresa_id),
+):
+    """Reemplaza completamente la lista de tarifas destajo del trabajador."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            t = await conn.fetchval(
+                "SELECT id FROM finanzas2.fin_trabajador WHERE id = $1 AND empresa_id = $2",
+                trabajador_id, empresa_id)
+            if not t:
+                raise HTTPException(404, "Trabajador no encontrado")
+            # Normalizar — quitar vacíos y deduplicar por servicio_nombre (última gana)
+            limpio = {}
+            for x in tarifas:
+                nombre = (x.servicio_nombre or '').strip()
+                if not nombre:
+                    continue
+                limpio[nombre] = float(x.tarifa)
+            await conn.execute(
+                "DELETE FROM finanzas2.fin_trabajador_tarifa_destajo WHERE trabajador_id = $1",
+                trabajador_id)
+            for servicio_nombre, tarifa in limpio.items():
+                await conn.execute("""
+                    INSERT INTO finanzas2.fin_trabajador_tarifa_destajo
+                        (trabajador_id, servicio_nombre, tarifa)
+                    VALUES ($1, $2, $3)
+                """, trabajador_id, servicio_nombre, tarifa)
+        rows = await conn.fetch("""
+            SELECT id, trabajador_id, servicio_nombre, tarifa
+              FROM finanzas2.fin_trabajador_tarifa_destajo
+             WHERE trabajador_id = $1
+             ORDER BY servicio_nombre
+        """, trabajador_id)
+        return [dict(r) for r in rows]
+
+
+# ═══════════════════════════════════════════════════════════════════
+#  HELPERS para linkear con Producción (catálogos)
+# ═══════════════════════════════════════════════════════════════════
+
+@router.get("/personas-produccion-disponibles")
+async def list_personas_produccion_disponibles(
+    solo_sin_trabajador: bool = False,
+    tipo_persona: Optional[str] = None,
+    empresa_id: int = Depends(get_empresa_id),
+):
+    """Lista personas de Producción para linkear con un trabajador.
+    Si solo_sin_trabajador=True, filtra las que aún no están asociadas."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        # $1 = empresa_id (siempre), $2 = tipo_persona (si se filtra)
+        params: list = [empresa_id]
+        where_extra = ""
+        if tipo_persona:
+            params.append(tipo_persona)
+            where_extra = f" WHERE p.tipo_persona = ${len(params)}"
+        personas = await conn.fetch(f"""
+            SELECT p.id, p.nombre, p.tipo_persona, p.unidad_interna_id,
+                   ui.nombre AS unidad_interna_nombre,
+                   (SELECT t.id FROM finanzas2.fin_trabajador t
+                     WHERE t.prod_persona_id = p.id AND t.empresa_id = $1 LIMIT 1) AS trabajador_id,
+                   (SELECT t.nombre FROM finanzas2.fin_trabajador t
+                     WHERE t.prod_persona_id = p.id AND t.empresa_id = $1 LIMIT 1) AS trabajador_nombre
+              FROM produccion.prod_personas_produccion p
+              LEFT JOIN finanzas2.fin_unidad_interna ui ON p.unidad_interna_id = ui.id
+              {where_extra}
+             ORDER BY p.nombre
+        """, *params)
+        items = [dict(r) for r in personas]
+        if solo_sin_trabajador:
+            items = [p for p in items if not p.get('trabajador_id')]
+        return items

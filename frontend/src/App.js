@@ -45,6 +45,8 @@ import AjustesPlanilla from './pages/AjustesPlanilla';
 import Adelantos from './pages/Adelantos';
 import PlanillasQuincena from './pages/PlanillasQuincena';
 import PlanillaQuincenaWizard from './pages/PlanillaQuincenaWizard';
+import PlanillasDestajo from './pages/PlanillasDestajo';
+import PlanillaDestajoWizard from './pages/PlanillaDestajoWizard';
 
 // === Activos Fijos ===
 import ActivosFijos from './pages/ActivosFijos';
@@ -149,9 +151,7 @@ function AppRoutes() {
         <Route path="/unidades-internas" element={<ProduccionInterna />} />
         <Route path="/gastos-unidad-interna" element={<ProduccionInterna />} />
         <Route path="/cargos-internos" element={<ProduccionInterna />} />
-        <Route path="/reporte-unidades-internas" element={<ProduccionInterna />} />
         <Route path="/cuentas-internas" element={<ProduccionInterna />} />
-        <Route path="/movimientos-produccion" element={<ProduccionInterna />} />
         {/* Detalle: kardex y P&L siguen como páginas independientes */}
         <Route path="/cuentas-internas/:id/kardex" element={<KardexCuentaInterna />} />
         <Route path="/reporte-pnl-unidad/:id" element={<PnLUnidadInterna />} />
@@ -161,6 +161,9 @@ function AppRoutes() {
         <Route path="/planillas-quincena" element={<PlanillasQuincena />} />
         <Route path="/planillas-quincena/nueva" element={<PlanillaQuincenaWizard />} />
         <Route path="/planillas-quincena/:id" element={<PlanillaQuincenaWizard />} />
+        <Route path="/planillas-destajo" element={<PlanillasDestajo />} />
+        <Route path="/planillas-destajo/nueva" element={<PlanillaDestajoWizard />} />
+        <Route path="/planillas-destajo/:id" element={<PlanillaDestajoWizard />} />
         <Route path="/activos-fijos" element={<ActivosFijos />} />
       </Routes>
     </div>

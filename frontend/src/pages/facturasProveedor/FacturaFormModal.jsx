@@ -21,6 +21,28 @@ const FacturaFormModal = ({
   const [vinculados, setVinculados] = useState([]);
   const [movimientosProduccion, setMovimientosProduccion] = useState([]);
   const [loadingMovimientos, setLoadingMovimientos] = useState(false);
+  const [showSunat, setShowSunat] = useState(false);
+
+  // Quick-create Proveedor (modal con datos completos, igual que Gastos)
+  const [showQuickProv, setShowQuickProv] = useState(false);
+  const [quickProvForm, setQuickProvForm] = useState({ nombre: '', tipo_documento: 'RUC', numero_documento: '' });
+  const [savingProv, setSavingProv] = useState(false);
+
+  const handleQuickCreateProv = async (e) => {
+    e.preventDefault();
+    if (!quickProvForm.nombre.trim()) { toast.error('Nombre obligatorio'); return; }
+    setSavingProv(true);
+    try {
+      const res = await createTercero({ ...quickProvForm, es_proveedor: true, es_cliente: false, es_personal: false, activo: true, terminos_pago_dias: 30 });
+      const newProv = res.data;
+      setFormData(prev => ({ ...prev, proveedor_id: newProv.id, beneficiario_nombre: '' }));
+      if (onProveedorCreated) onProveedorCreated(newProv);
+      setShowQuickProv(false);
+      setQuickProvForm({ nombre: '', tipo_documento: 'RUC', numero_documento: '' });
+      toast.success(`Proveedor "${newProv.nombre}" creado`);
+    } catch { toast.error('Error creando proveedor'); }
+    finally { setSavingProv(false); }
+  };
 
   // Initialize form when modal opens
   useEffect(() => {
@@ -197,20 +219,6 @@ const FacturaFormModal = ({
         return updated;
       })
     }));
-  };
-
-  // Proveedor creation
-  const handleCreateProveedor = async (nombre) => {
-    if (!nombre || nombre.trim() === '') return;
-    try {
-      const response = await createTercero({ nombre: nombre.trim(), es_proveedor: true, tipo_documento: 'RUC', numero_documento: '', terminos_pago_dias: 30 });
-      setFormData(prev => ({ ...prev, proveedor_id: response.data.id, beneficiario_nombre: '' }));
-      toast.success(`Proveedor "${nombre}" creado exitosamente`);
-      if (onProveedorCreated) onProveedorCreated(response.data);
-    } catch (error) {
-      console.error('Error creating proveedor:', error);
-      toast.error('Error al crear proveedor');
-    }
   };
 
   // Submit
@@ -462,7 +470,7 @@ const FacturaFormModal = ({
                   searchPlaceholder="Buscar por nombre..."
                   displayKey="nombre"
                   valueKey="id"
-                  onCreateNew={isLocked ? undefined : handleCreateProveedor}
+                  onCreateNew={isLocked ? undefined : (nombre) => { setQuickProvForm({ nombre: nombre || '', tipo_documento: 'RUC', numero_documento: '' }); setShowQuickProv(true); }}
                   createNewLabel="Crear proveedor"
                   data-testid="proveedor-select"
                   disabled={isLocked}
@@ -495,16 +503,12 @@ const FacturaFormModal = ({
               {monedas.find(m => m.id === parseInt(formData.moneda_id))?.codigo === 'USD' && (
                 <div className="form-group">
                   <label className="form-label required">T.C.</label>
-                  <input type="number" step="0.001" className="form-input" placeholder="Ej: 3.72" value={formData.tipo_cambio} onChange={(e) => setFormData(prev => ({ ...prev, tipo_cambio: e.target.value }))} data-testid="tipo-cambio-input" required disabled={isLocked} style={isLocked ? lockedStyle : undefined} />
+                  <input type="number" step="0.001" className="form-input" placeholder="Ej: 3.72" value={formData.tipo_cambio} onChange={(e) => setFormData(prev => ({ ...prev, tipo_cambio: e.target.value }))} onWheel={(e) => e.currentTarget.blur()} data-testid="tipo-cambio-input" required disabled={isLocked} style={isLocked ? lockedStyle : undefined} />
                 </div>
               )}
               <div className="form-group">
                 <label className="form-label required">Fecha de factura</label>
                 <input type="date" className="form-input" value={formData.fecha_factura} onChange={(e) => setFormData(prev => ({ ...prev, fecha_factura: e.target.value }))} required disabled={isLocked} style={isLocked ? lockedStyle : undefined} />
-              </div>
-              <div className="form-group">
-                <label className="form-label">Fecha contable {isLocked && <span style={{ fontSize: '0.65rem', color: '#22C55E' }}>editable</span>}</label>
-                <input type="date" className="form-input" value={formData.fecha_contable} onChange={(e) => { setFechaContableManual(true); setFormData(prev => ({ ...prev, fecha_contable: e.target.value })); }} data-testid="factura-fecha-contable" />
               </div>
               <div className="form-group">
                 <label className="form-label">Fecha de vencimiento</label>
@@ -530,38 +534,53 @@ const FacturaFormModal = ({
               </div>
             </div>
 
-            {/* SUNAT */}
-            <div className="form-row" style={{ marginTop: '0.75rem', gap: '0.75rem', flexWrap: 'wrap' }}>
-              <div className="form-group" style={{ maxWidth: '140px' }}>
-                <label className="form-label">Doc SUNAT</label>
-                <select className="form-input form-select" value={formData.tipo_comprobante_sunat} onChange={(e) => setFormData(prev => ({ ...prev, tipo_comprobante_sunat: e.target.value }))} data-testid="factura-tipo-sunat">
-                  <option value="">--</option>
-                  <option value="01">01 - Factura</option>
-                  <option value="03">03 - Boleta</option>
-                  <option value="07">07 - Nota Credito</option>
-                  <option value="08">08 - Nota Debito</option>
-                  <option value="14">14 - Serv. Publico</option>
-                  <option value="02">02 - Recibo Hon.</option>
-                  <option value="12">12 - Ticket</option>
-                  <option value="00">00 - Otros</option>
-                </select>
-              </div>
-              <div className="form-group" style={{ maxWidth: '140px' }}>
-                <label className="form-label">Base Gravada</label>
-                <input type="text" className="form-input" value={totales.base_gravada.toFixed(2)} readOnly style={{ background: 'var(--input-bg-readonly)' }} data-testid="factura-base-gravada" />
-              </div>
-              <div className="form-group" style={{ maxWidth: '130px' }}>
-                <label className="form-label">IGV</label>
-                <input type="text" className="form-input" value={totales.igv_sunat.toFixed(2)} readOnly style={{ background: 'var(--input-bg-readonly)' }} data-testid="factura-igv-sunat" />
-              </div>
-              <div className="form-group" style={{ maxWidth: '140px' }}>
-                <label className="form-label">No Gravada</label>
-                <input type="text" className="form-input" value={totales.base_no_gravada.toFixed(2)} readOnly style={{ background: 'var(--input-bg-readonly)' }} data-testid="factura-base-no-gravada" />
-              </div>
-              <div className="form-group" style={{ maxWidth: '120px' }}>
-                <label className="form-label">ISC</label>
-                <input type="number" step="0.01" min="0" className="form-input" value={formData.isc} onChange={(e) => setFormData(prev => ({ ...prev, isc: parseFloat(e.target.value) || 0 }))} data-testid="factura-isc" disabled={isLocked} style={isLocked ? lockedStyle : undefined} />
-              </div>
+            {/* Datos adicionales (colapsable): fecha contable + SUNAT */}
+            <div style={{ marginTop: '0.75rem' }}>
+              <button type="button" onClick={() => setShowSunat(!showSunat)}
+                style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '0.78rem', color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: '0.375rem', padding: '0.25rem 0' }}>
+                <span style={{ transform: showSunat ? 'rotate(90deg)' : 'rotate(0)', transition: 'transform 0.15s', display: 'inline-block' }}>&#9654;</span>
+                Datos adicionales (SUNAT, fecha contable)
+              </button>
+              {showSunat && (
+                <div style={{ marginTop: '0.5rem' }}>
+                  <div className="form-row" style={{ gap: '0.75rem', flexWrap: 'wrap' }}>
+                    <div className="form-group" style={{ maxWidth: '180px' }}>
+                      <label className="form-label">Fecha contable {isLocked && <span style={{ fontSize: '0.65rem', color: '#22C55E' }}>editable</span>}</label>
+                      <input type="date" className="form-input" value={formData.fecha_contable} onChange={(e) => { setFechaContableManual(true); setFormData(prev => ({ ...prev, fecha_contable: e.target.value })); }} data-testid="factura-fecha-contable" />
+                    </div>
+                    <div className="form-group" style={{ maxWidth: '140px' }}>
+                      <label className="form-label">Doc SUNAT</label>
+                      <select className="form-input form-select" value={formData.tipo_comprobante_sunat} onChange={(e) => setFormData(prev => ({ ...prev, tipo_comprobante_sunat: e.target.value }))} data-testid="factura-tipo-sunat">
+                        <option value="">--</option>
+                        <option value="01">01 - Factura</option>
+                        <option value="03">03 - Boleta</option>
+                        <option value="07">07 - Nota Credito</option>
+                        <option value="08">08 - Nota Debito</option>
+                        <option value="14">14 - Serv. Publico</option>
+                        <option value="02">02 - Recibo Hon.</option>
+                        <option value="12">12 - Ticket</option>
+                        <option value="00">00 - Otros</option>
+                      </select>
+                    </div>
+                    <div className="form-group" style={{ maxWidth: '140px' }}>
+                      <label className="form-label">Base Gravada</label>
+                      <input type="text" className="form-input" value={totales.base_gravada.toFixed(2)} readOnly style={{ background: 'var(--input-bg-readonly)' }} data-testid="factura-base-gravada" />
+                    </div>
+                    <div className="form-group" style={{ maxWidth: '130px' }}>
+                      <label className="form-label">IGV</label>
+                      <input type="text" className="form-input" value={totales.igv_sunat.toFixed(2)} readOnly style={{ background: 'var(--input-bg-readonly)' }} data-testid="factura-igv-sunat" />
+                    </div>
+                    <div className="form-group" style={{ maxWidth: '140px' }}>
+                      <label className="form-label">No Gravada</label>
+                      <input type="text" className="form-input" value={totales.base_no_gravada.toFixed(2)} readOnly style={{ background: 'var(--input-bg-readonly)' }} data-testid="factura-base-no-gravada" />
+                    </div>
+                    <div className="form-group" style={{ maxWidth: '120px' }}>
+                      <label className="form-label">ISC</label>
+                      <input type="number" step="0.01" min="0" className="form-input" value={formData.isc} onChange={(e) => setFormData(prev => ({ ...prev, isc: parseFloat(e.target.value) || 0 }))} onWheel={(e) => e.currentTarget.blur()} data-testid="factura-isc" disabled={isLocked} style={isLocked ? lockedStyle : undefined} />
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Category lines section */}
@@ -630,7 +649,7 @@ const FacturaFormModal = ({
                             </select>
                           </td>
                           <td>
-                            <input type="number" step="0.01" placeholder="0.00" value={linea.importe} onChange={(e) => handleLineaChange(index, 'importe', e.target.value)} style={{ textAlign: 'right', ...(isLocked ? lockedStyle : {}) }} data-testid={`linea-importe-${index}`} disabled={isLocked} />
+                            <input type="number" step="0.01" placeholder="0.00" value={linea.importe} onChange={(e) => handleLineaChange(index, 'importe', e.target.value)} onWheel={(e) => e.currentTarget.blur()} style={{ textAlign: 'right', ...(isLocked ? lockedStyle : {}) }} data-testid={`linea-importe-${index}`} disabled={isLocked} />
                           </td>
                           <td style={{ textAlign: 'center' }}>
                             <input type="checkbox" checked={linea.igv_aplica} onChange={(e) => handleLineaChange(index, 'igv_aplica', e.target.checked)} style={{ width: '18px', height: '18px', accentColor: 'var(--primary)' }} disabled={isLocked} />
@@ -731,10 +750,10 @@ const FacturaFormModal = ({
                             <th style={{ minWidth: '150px' }}>ART. / SRV. PADRE</th>
                             {hayServicio && <th style={{ minWidth: '140px' }}>DETALLE SERVICIO</th>}
                             {hayServicio && <th style={{ minWidth: '140px' }}>REGISTRO / CORTE</th>}
-                            <th style={{ width: '60px' }}>CANT.</th>
-                            <th style={{ width: '85px' }}>COSTO U.</th>
-                            <th style={{ minWidth: '120px' }}>LINEA NEG.</th>
-                            <th style={{ width: '90px' }}>IMPORTE</th>
+                            <th style={{ width: '90px' }}>CANT.</th>
+                            <th style={{ width: '110px' }}>COSTO U.</th>
+                            <th style={{ minWidth: '140px' }}>LINEA NEG.</th>
+                            <th style={{ width: '110px' }}>IMPORTE</th>
                             <th style={{ width: '40px' }}>IGV</th>
                             <th style={{ width: '60px' }}></th>
                           </tr>
@@ -812,8 +831,26 @@ const FacturaFormModal = ({
                                   )}
                                 </td>
                                 )}
-                                <td><input type="number" step="1" min="1" placeholder="1" value={articulo.cantidad} onChange={(e) => handleArticuloChange(index, 'cantidad', e.target.value)} style={{ textAlign: 'center', fontSize: '0.8125rem' }} data-testid={`articulo-cantidad-${index}`} /></td>
-                                <td><input type="number" step="0.01" placeholder="0.00" value={articulo.precio} onChange={(e) => handleArticuloChange(index, 'precio', e.target.value)} style={{ textAlign: 'right', fontSize: '0.8125rem' }} data-testid={`articulo-precio-${index}`} /></td>
+                                <td><input type="number" step="0.01" min="0" placeholder="1" value={articulo.cantidad} onChange={(e) => handleArticuloChange(index, 'cantidad', e.target.value)} onWheel={(e) => e.currentTarget.blur()} style={{ textAlign: 'right', fontSize: '0.8125rem' }} data-testid={`articulo-cantidad-${index}`} /></td>
+                                <td>
+                                  {(() => {
+                                    const fifo = articulo.articulo_id ? valorizacionMap?.[articulo.articulo_id] : null;
+                                    const refPrice = fifo?.costo_fifo_unitario;
+                                    const editado = refPrice && Math.abs(parseFloat(articulo.precio || 0) - parseFloat(refPrice)) > 0.001;
+                                    const tooltip = refPrice
+                                      ? `Costo referencial del último ingreso: ${parseFloat(refPrice).toFixed(2)}. Editable — puedes ponerle el precio real de la factura.`
+                                      : 'Costo unitario. Editable.';
+                                    return (
+                                      <input type="number" step="0.01" placeholder="0.00"
+                                        value={articulo.precio}
+                                        onChange={(e) => handleArticuloChange(index, 'precio', e.target.value)}
+                                        onWheel={(e) => e.currentTarget.blur()}
+                                        title={tooltip}
+                                        style={{ textAlign: 'right', fontSize: '0.8125rem', background: refPrice && !editado ? 'rgba(254, 243, 199, 0.5)' : undefined, borderColor: editado ? 'var(--primary)' : undefined }}
+                                        data-testid={`articulo-precio-${index}`} />
+                                    );
+                                  })()}
+                                </td>
                                 <td>
                                   <TableSearchSelect options={lineasNegocio} value={articulo.linea_negocio_id} onChange={(value) => handleArticuloChange(index, 'linea_negocio_id', value)} placeholder="Linea" displayKey="nombre" valueKey="id" />
                                 </td>
@@ -944,6 +981,50 @@ const FacturaFormModal = ({
           </div>
         </form>
       </div>
+
+      {/* Quick-create Proveedor modal (igual que Gastos) */}
+      {showQuickProv && (
+        <div className="modal-overlay" onClick={() => setShowQuickProv(false)} style={{ zIndex: 1100 }}>
+          <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '420px' }}>
+            <div className="modal-header">
+              <h2 className="modal-title">Crear Proveedor</h2>
+              <button className="modal-close" onClick={() => setShowQuickProv(false)}><X size={18} /></button>
+            </div>
+            <form onSubmit={handleQuickCreateProv}>
+              <div className="modal-body">
+                <div className="form-group">
+                  <label className="form-label">Nombre / Razón Social *</label>
+                  <input type="text" className="form-input" value={quickProvForm.nombre} autoFocus
+                    onChange={e => setQuickProvForm({ ...quickProvForm, nombre: e.target.value })} required />
+                </div>
+                <div className="form-grid form-grid-2" style={{ marginTop: '0.5rem' }}>
+                  <div className="form-group">
+                    <label className="form-label">Tipo Doc.</label>
+                    <select className="form-input form-select" value={quickProvForm.tipo_documento}
+                      onChange={e => setQuickProvForm({ ...quickProvForm, tipo_documento: e.target.value })}>
+                      <option value="RUC">RUC</option>
+                      <option value="DNI">DNI</option>
+                      <option value="CE">CE</option>
+                    </select>
+                  </div>
+                  <div className="form-group">
+                    <label className="form-label">N Documento</label>
+                    <input type="text" className="form-input" value={quickProvForm.numero_documento}
+                      onChange={e => setQuickProvForm({ ...quickProvForm, numero_documento: e.target.value })}
+                      placeholder="20123456789" />
+                  </div>
+                </div>
+              </div>
+              <div className="modal-footer">
+                <button type="button" className="btn btn-outline" onClick={() => setShowQuickProv(false)}>Cancelar</button>
+                <button type="submit" className="btn btn-primary" disabled={savingProv}>
+                  {savingProv ? 'Creando...' : 'Crear y Seleccionar'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

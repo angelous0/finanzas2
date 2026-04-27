@@ -1,17 +1,18 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   ChevronLeft, ChevronRight, Calculator, Clock, X, Check,
-  AlertTriangle, Save, CreditCard, Plus, Trash2, Edit3, ArrowLeft,
+  AlertTriangle, Save, CreditCard, Plus, Trash2, ArrowLeft,
+  RotateCcw, Printer,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   calcularPreviewPlanilla, createPlanillaQuincena, updatePlanillaQuincena,
-  getPlanillaQuincena, aprobarPlanillaQuincena, pagarPlanillaQuincena,
-  anularPagoPlanillaQuincena,
+  getPlanillaQuincena, aprobarPlanillaQuincena,
+  pagarDetallePlanilla, anularPagoDetalle,
   getAdelantosPendientesTrabajador, getCuentasFinancieras,
+  planillaPdfUrl,
 } from '../services/api';
-import { useEmpresa } from '../context/EmpresaContext';
 
 const fmt = (v) => `S/ ${Number(v || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const fmtDate = (d) => d ? new Date(d + 'T00:00:00').toLocaleDateString('es-PE') : '';
@@ -20,7 +21,6 @@ const MESES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto'
 // Recalcula el neto de una línea en cliente.
 // IMPORTANTE: NO redondeamos en los pasos intermedios. Solo redondeamos
 // al final (subtotales y neto) a 2 decimales para persistencia.
-// La UI muestra con `fmt` (2 decimales) pero el valor guardado es preciso.
 function recalcularLinea(linea) {
   const hn = parseFloat(linea.horas_normales) || 0;
   const h25 = parseFloat(linea.horas_extra_25) || 0;
@@ -28,7 +28,6 @@ function recalcularLinea(linea) {
   const tardanzas = parseFloat(linea.descuento_tardanzas) || 0;
   const adelantos = parseFloat(linea.monto_adelantos) || 0;
 
-  // Multiplicación con precisión completa (las tarifas vienen con 4 decimales del backend)
   const monto_hn_raw = hn * (parseFloat(linea.hora_simple) || 0);
   const monto_h25_raw = h25 * (parseFloat(linea.hora_extra_25) || 0);
   const monto_h35_raw = h35 * (parseFloat(linea.hora_extra_35) || 0);
@@ -38,7 +37,6 @@ function recalcularLinea(linea) {
   const afp = parseFloat(linea.afp_total) || 0;
   const neto_raw = subtotal_horas_raw + asig - afp - tardanzas - adelantos;
 
-  // Redondeo SOLO al final para persistencia en BD
   return {
     ...linea,
     monto_horas_normales: +monto_hn_raw.toFixed(2),
@@ -50,7 +48,6 @@ function recalcularLinea(linea) {
 }
 
 export default function PlanillaQuincenaWizard() {
-  const { empresaActual } = useEmpresa();
   const navigate = useNavigate();
   const { id } = useParams();
   const isEdit = !!id;
@@ -68,13 +65,68 @@ export default function PlanillaQuincenaWizard() {
   const [lineas, setLineas] = useState([]);
   const [notas, setNotas] = useState('');
 
-  // Paso 3
+  // Cuentas financieras (para la modal de pago)
   const [cuentas, setCuentas] = useState([]);
-  const [pagosPlan, setPagosPlan] = useState([]);
-  const [existingPagos, setExistingPagos] = useState([]);
+
+  // Pagos ya registrados (para mostrar detalle al click en "Pagado")
+  const [pagos, setPagos] = useState([]);
 
   // Popup de adelantos
   const [adelantosModal, setAdelantosModal] = useState(null); // {lineaIdx, adelantos}
+
+  // Modal de pago por trabajador (nuevo pago)
+  const [pagoModal, setPagoModal] = useState(null); // { linea }
+
+  // Modal ver detalle de pagos ya hechos
+  const [verPagosModal, setVerPagosModal] = useState(null); // { linea }
+
+  const cargarCuentasIfNeeded = async () => {
+    if (cuentas.length > 0) return;
+    try {
+      const c = await getCuentasFinancieras();
+      // Cargamos TODAS las cuentas activas (incluyendo ficticias de unidades internas).
+      // El filtrado final — qué cuentas ve cada trabajador — se hace en el modal de pago
+      // según la unidad_interna_id del trabajador.
+      setCuentas((c.data || []).filter(x => x.activo !== false));
+    } catch { /* noop */ }
+  };
+
+  const reload = async (planillaIdArg) => {
+    const pid = planillaIdArg || planillaId;
+    if (!pid) return;
+    const r = await getPlanillaQuincena(pid);
+    const p = r.data;
+    setPlanillaId(p.id);
+    setAnio(p.anio); setMes(p.mes); setQuincena(p.quincena);
+    setFechas({ inicio: p.fecha_inicio, fin: p.fecha_fin });
+    setEstado(p.estado);
+    setNotas(p.notas || '');
+
+    const adelPorTrab = {};
+    (p.adelantos_vinculados || []).forEach(a => {
+      if (!adelPorTrab[a.trabajador_id]) adelPorTrab[a.trabajador_id] = [];
+      adelPorTrab[a.trabajador_id].push(a);
+    });
+
+    const dets = (p.detalles || []).map(d => ({
+      ...d,
+      horas_normales: parseFloat(d.horas_normales) || 0,
+      horas_extra_25: parseFloat(d.horas_extra_25) || 0,
+      horas_extra_35: parseFloat(d.horas_extra_35) || 0,
+      descuento_tardanzas: parseFloat(d.descuento_tardanzas) || 0,
+      monto_adelantos: parseFloat(d.monto_adelantos) || 0,
+      adelantos_ids: (adelPorTrab[d.trabajador_id] || []).map(a => a.id),
+      _adelantos_vinculados: adelPorTrab[d.trabajador_id] || [],
+      hora_simple: parseFloat(d.hora_simple) || 0,
+      hora_extra_25: parseFloat(d.hora_extra_25) || 0,
+      hora_extra_35: parseFloat(d.hora_extra_35) || 0,
+      asig_familiar_monto: parseFloat(d.asig_familiar_monto) || 0,
+      afp_total: parseFloat(d.afp_total) || 0,
+    }));
+    setLineas(dets);
+    setPagos(p.pagos || []);
+    setStep(2);
+  };
 
   // Cargar si es edit
   useEffect(() => {
@@ -82,42 +134,13 @@ export default function PlanillaQuincenaWizard() {
     (async () => {
       setLoading(true);
       try {
-        const r = await getPlanillaQuincena(id);
-        const p = r.data;
-        setPlanillaId(p.id);
-        setAnio(p.anio); setMes(p.mes); setQuincena(p.quincena);
-        setFechas({ inicio: p.fecha_inicio, fin: p.fecha_fin });
-        setEstado(p.estado);
-        setNotas(p.notas || '');
-
-        const adelPorTrab = {};
-        (p.adelantos_vinculados || []).forEach(a => {
-          if (!adelPorTrab[a.trabajador_id]) adelPorTrab[a.trabajador_id] = [];
-          adelPorTrab[a.trabajador_id].push(a);
-        });
-
-        const dets = (p.detalles || []).map(d => ({
-          ...d,
-          horas_normales: parseFloat(d.horas_normales) || 0,
-          horas_extra_25: parseFloat(d.horas_extra_25) || 0,
-          horas_extra_35: parseFloat(d.horas_extra_35) || 0,
-          descuento_tardanzas: parseFloat(d.descuento_tardanzas) || 0,
-          monto_adelantos: parseFloat(d.monto_adelantos) || 0,
-          adelantos_ids: (adelPorTrab[d.trabajador_id] || []).map(a => a.id),
-          _adelantos_vinculados: adelPorTrab[d.trabajador_id] || [],
-          hora_simple: parseFloat(d.hora_simple) || 0,
-          hora_extra_25: parseFloat(d.hora_extra_25) || 0,
-          hora_extra_35: parseFloat(d.hora_extra_35) || 0,
-          asig_familiar_monto: parseFloat(d.asig_familiar_monto) || 0,
-          afp_total: parseFloat(d.afp_total) || 0,
-        }));
-        setLineas(dets);
-        setExistingPagos(p.pagos || []);
-        setStep(2);
+        await reload(parseInt(id));
+        await cargarCuentasIfNeeded();
       } catch (e) {
         toast.error('Error cargando planilla');
       } finally { setLoading(false); }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isEdit, id]);
 
   const handleCalcular = async () => {
@@ -130,10 +153,12 @@ export default function PlanillaQuincenaWizard() {
       }
       setFechas({ inicio: r.data.fecha_inicio, fin: r.data.fecha_fin });
       setWarnings(r.data.warnings || []);
+      // El backend ya autoselecciona los adelantos pendientes del trabajador.
+      // El usuario puede desmarcarlos desde el modal de adelantos para postergar.
       setLineas((r.data.trabajadores || []).map(t => ({
         ...t,
-        adelantos_ids: [],
-        _adelantos_vinculados: [],
+        adelantos_ids: t.adelantos_ids || [],
+        _adelantos_vinculados: t.adelantos_pendientes || [],
       })));
       setStep(2);
     } catch (e) {
@@ -182,17 +207,13 @@ export default function PlanillaQuincenaWizard() {
 
   const handleAprobar = async () => {
     if (!planillaId) { await handleGuardarBorrador(); return; }
-    if (!window.confirm('¿Aprobar la planilla? Después ya no se podrá editar.')) return;
+    if (!window.confirm('¿Aprobar la planilla? Después ya no se podrán editar las horas. Podrás registrar los pagos por trabajador desde la misma tabla.')) return;
     setSaving(true);
     try {
       await aprobarPlanillaQuincena(planillaId);
-      toast.success('Planilla aprobada');
-      const r = await getPlanillaQuincena(planillaId);
-      setEstado(r.data.estado);
-      setStep(3);
-      // cargar cuentas
-      const c = await getCuentasFinancieras();
-      setCuentas((c.data || []).filter(x => !x.es_ficticia && x.activo !== false));
+      toast.success('Planilla aprobada · ahora registra los pagos por trabajador');
+      await reload();
+      await cargarCuentasIfNeeded();
     } catch (e) {
       toast.error(typeof e.response?.data?.detail === 'string' ? e.response.data.detail : 'Error');
     } finally { setSaving(false); }
@@ -202,7 +223,6 @@ export default function PlanillaQuincenaWizard() {
     const l = lineas[lineaIdx];
     try {
       const r = await getAdelantosPendientesTrabajador(l.trabajador_id);
-      // Incluir también los ya vinculados (aunque estén "descontado=false" mientras esta planilla siga en borrador)
       setAdelantosModal({ lineaIdx, adelantos: r.data || [] });
     } catch { toast.error('Error cargando adelantos'); }
   };
@@ -232,6 +252,22 @@ export default function PlanillaQuincenaWizard() {
     });
   };
 
+  const handleAbrirPagoModal = async (l) => {
+    await cargarCuentasIfNeeded();
+    setPagoModal({ linea: l });
+  };
+
+  const handleAnularPagoTrabajador = async (l) => {
+    if (!window.confirm(`¿Anular el pago de ${l.nombre}?\n\nSe revertirán los egresos (se genera INGRESO en las cuentas) y sus adelantos volverán a pendientes.`)) return;
+    try {
+      await anularPagoDetalle(planillaId, l.id);
+      toast.success('Pago anulado');
+      await reload();
+    } catch (e) {
+      toast.error(typeof e.response?.data?.detail === 'string' ? e.response.data.detail : 'Error al anular');
+    }
+  };
+
   // === Totales ===
   const totales = lineas.reduce((acc, l) => {
     acc.bruto += parseFloat(l.subtotal_horas) || 0;
@@ -240,8 +276,15 @@ export default function PlanillaQuincenaWizard() {
     acc.tardanzas += parseFloat(l.descuento_tardanzas) || 0;
     acc.adelantos += parseFloat(l.monto_adelantos) || 0;
     acc.neto += parseFloat(l.neto) || 0;
+    if (l.pagado_at) acc.pagadoNeto += parseFloat(l.neto) || 0;
     return acc;
-  }, { bruto: 0, asig: 0, afp: 0, tardanzas: 0, adelantos: 0, neto: 0 });
+  }, { bruto: 0, asig: 0, afp: 0, tardanzas: 0, adelantos: 0, neto: 0, pagadoNeto: 0 });
+
+  const numPagados = lineas.filter(l => !!l.pagado_at).length;
+  const totalPendienteDePago = totales.neto - totales.pagadoNeto;
+
+  const mostrarColumnaPago = estado === 'aprobada' || estado === 'pagada';
+  const editableHoras = estado === 'borrador';
 
   // ====================================================================
   // RENDER
@@ -250,7 +293,7 @@ export default function PlanillaQuincenaWizard() {
   if (loading) return <div className="p-10 text-muted-foreground">Cargando…</div>;
 
   return (
-    <div className="max-w-[1400px] mx-auto space-y-5" data-testid="planilla-wizard">
+    <div className="max-w-[1500px] mx-auto space-y-5" data-testid="planilla-wizard">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -260,10 +303,21 @@ export default function PlanillaQuincenaWizard() {
           </button>
           <div>
             <h1 className="text-xl font-bold">{isEdit ? `Planilla ${MESES[mes-1]} ${anio} · Q${quincena}` : 'Nueva Planilla Quincenal'}</h1>
-            {estado && <p className="text-xs text-muted-foreground mt-0.5">Estado: <strong>{estado}</strong></p>}
+            {estado && <p className="text-xs text-muted-foreground mt-0.5">Estado: <strong>{estado}</strong>{estado === 'aprobada' && lineas.length > 0 && ` · ${numPagados} de ${lineas.length} pagados`}</p>}
           </div>
         </div>
-        <StepIndicator step={step}/>
+        <div className="flex items-center gap-3">
+          {isEdit && (estado === 'aprobada' || estado === 'pagada') && (
+            <button
+              onClick={() => window.open(planillaPdfUrl(planillaId), '_blank')}
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-md border border-border bg-card hover:bg-muted transition-colors"
+              title="Abrir PDF consolidado para imprimir"
+              data-testid="btn-imprimir-planilla">
+              <Printer size={14}/> Imprimir planilla
+            </button>
+          )}
+          <StepIndicator step={step}/>
+        </div>
       </div>
 
       {/* PASO 1 — Período */}
@@ -302,7 +356,7 @@ export default function PlanillaQuincenaWizard() {
         </div>
       )}
 
-      {/* PASO 2 — Tabla editable */}
+      {/* PASO 2 — Tabla editable con columna PAGO al aprobar */}
       {step === 2 && (
         <div className="space-y-4">
           {/* Header del período con KPIs */}
@@ -315,6 +369,9 @@ export default function PlanillaQuincenaWizard() {
             <div className="bg-card rounded-lg border border-border p-3">
               <div className="text-[10px] uppercase text-muted-foreground tracking-wider">Trabajadores</div>
               <div className="text-lg font-bold mt-0.5">{lineas.length}</div>
+              {mostrarColumnaPago && (
+                <div className="text-[10px] text-muted-foreground mt-0.5">{numPagados} pagados · {lineas.length - numPagados} pendientes</div>
+              )}
             </div>
             <div className="bg-card rounded-lg border border-border p-3">
               <div className="text-[10px] uppercase text-muted-foreground tracking-wider">Bruto horas</div>
@@ -324,9 +381,14 @@ export default function PlanillaQuincenaWizard() {
               <div className="text-[10px] uppercase text-muted-foreground tracking-wider">Descuentos</div>
               <div className="text-lg font-bold text-red-600 font-mono mt-0.5">{fmt(totales.afp + totales.tardanzas + totales.adelantos)}</div>
             </div>
-            <div className="bg-emerald-500/5 rounded-lg border border-emerald-500/30 p-3">
-              <div className="text-[10px] uppercase text-emerald-700 dark:text-emerald-400 tracking-wider font-semibold">Total neto</div>
-              <div className="text-xl font-bold text-emerald-700 dark:text-emerald-400 font-mono mt-0.5">{fmt(totales.neto)}</div>
+            <div className={`rounded-lg border p-3 ${mostrarColumnaPago ? 'bg-blue-500/5 border-blue-500/30' : 'bg-emerald-500/5 border-emerald-500/30'}`}>
+              <div className={`text-[10px] uppercase tracking-wider font-semibold ${mostrarColumnaPago ? 'text-blue-700 dark:text-blue-400' : 'text-emerald-700 dark:text-emerald-400'}`}>
+                {mostrarColumnaPago ? 'Pendiente de pago' : 'Total neto'}
+              </div>
+              <div className={`text-xl font-bold font-mono mt-0.5 ${mostrarColumnaPago ? 'text-blue-700 dark:text-blue-400' : 'text-emerald-700 dark:text-emerald-400'}`}>
+                {mostrarColumnaPago ? fmt(totalPendienteDePago) : fmt(totales.neto)}
+              </div>
+              {mostrarColumnaPago && <div className="text-[10px] text-muted-foreground mt-0.5">de {fmt(totales.neto)} total</div>}
             </div>
           </div>
 
@@ -342,9 +404,29 @@ export default function PlanillaQuincenaWizard() {
             </div>
           )}
 
-          <div className="text-[11px] text-muted-foreground italic">
-            💡 Los montos de <strong>Asig. Fam.</strong> y <strong>AFP</strong> ya están calculados como <strong>½ quincena</strong> (la mitad del mensual legal).
-          </div>
+          {!mostrarColumnaPago && (
+            <div className="space-y-1">
+              <div className="text-[11px] text-muted-foreground italic">
+                💡 Los montos de <strong>Asig. Fam.</strong> y <strong>AFP</strong> ya están calculados como <strong>½ quincena</strong> (la mitad del mensual legal).
+              </div>
+              {lineas.some(l => (l.adelantos_ids?.length || 0) > 0) && (
+                <div className="text-[11px] text-blue-700 dark:text-blue-400 italic">
+                  💡 Los <strong>adelantos pendientes</strong> de cada trabajador se aplican automáticamente. Click en el botón <strong>+</strong> de la columna Adelantos para desmarcar y postergar a la siguiente quincena.
+                </div>
+              )}
+            </div>
+          )}
+          {mostrarColumnaPago && (
+            <div className="bg-blue-500/5 border border-blue-500/20 rounded-md p-3 flex items-start gap-2">
+              <CreditCard size={16} className="text-blue-600 mt-0.5 shrink-0"/>
+              <div className="text-xs">
+                <div className="font-medium mb-0.5">Registro de pagos por trabajador</div>
+                <div className="text-muted-foreground">
+                  Usa el botón de la última columna <strong>PAGO</strong> para abrir el detalle y elegir medios de pago de cada trabajador individualmente.
+                </div>
+              </div>
+            </div>
+          )}
 
           <div className="rounded-xl border border-border bg-card overflow-x-auto shadow-sm">
             <table className="w-full text-sm">
@@ -376,11 +458,18 @@ export default function PlanillaQuincenaWizard() {
                   <th className="text-right px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
                     NETO
                   </th>
+                  {mostrarColumnaPago && (
+                    <th className="text-center px-3 py-3 text-[11px] font-semibold uppercase tracking-wider text-blue-700 dark:text-blue-400 w-36">
+                      PAGO
+                    </th>
+                  )}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
-                {lineas.map((l, idx) => (
-                  <tr key={l.trabajador_id} className="hover:bg-muted/20 transition-colors">
+                {lineas.map((l, idx) => {
+                  const pagado = !!l.pagado_at;
+                  return (
+                  <tr key={l.trabajador_id} className={`hover:bg-muted/20 transition-colors ${pagado ? 'bg-emerald-500/5' : ''}`}>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-2.5">
                         <div className="h-8 w-8 rounded-full bg-gradient-to-br from-blue-500 to-emerald-500 flex items-center justify-center text-white text-[11px] font-semibold shrink-0">
@@ -399,7 +488,7 @@ export default function PlanillaQuincenaWizard() {
                       <div className="text-[10px] text-muted-foreground font-mono">{fmt(l.hora_simple)}/h</div>
                     </td>
                     <td className="px-2 py-3">
-                      {estado === 'borrador' ? (
+                      {editableHoras ? (
                         <input type="number" step="0.5" value={l.horas_normales}
                           onChange={e => actualizarLinea(idx, 'horas_normales', e.target.value)}
                           className="w-full px-2 py-1.5 text-sm text-center rounded-md border border-border bg-background font-mono focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
@@ -408,14 +497,14 @@ export default function PlanillaQuincenaWizard() {
                       )}
                     </td>
                     <td className="px-2 py-3">
-                      {estado === 'borrador' ? (
+                      {editableHoras ? (
                         <input type="number" step="0.5" value={l.horas_extra_25}
                           onChange={e => actualizarLinea(idx, 'horas_extra_25', e.target.value)}
                           className="w-full px-2 py-1.5 text-sm text-center rounded-md border border-border bg-background font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
                       ) : <div className="text-center font-mono text-sm">{l.horas_extra_25}</div>}
                     </td>
                     <td className="px-2 py-3">
-                      {estado === 'borrador' ? (
+                      {editableHoras ? (
                         <input type="number" step="0.5" value={l.horas_extra_35}
                           onChange={e => actualizarLinea(idx, 'horas_extra_35', e.target.value)}
                           className="w-full px-2 py-1.5 text-sm text-center rounded-md border border-border bg-background font-mono focus:outline-none focus:ring-2 focus:ring-blue-500" />
@@ -428,7 +517,7 @@ export default function PlanillaQuincenaWizard() {
                       {fmt(l.afp_total)}
                     </td>
                     <td className="px-2 py-3">
-                      {estado === 'borrador' ? (
+                      {editableHoras ? (
                         <input type="number" step="0.01" min="0" value={l.descuento_tardanzas}
                           onChange={e => actualizarLinea(idx, 'descuento_tardanzas', e.target.value)}
                           className="w-full px-2 py-1.5 text-sm text-right rounded-md border border-border bg-background font-mono focus:outline-none focus:ring-2 focus:ring-red-400" />
@@ -436,13 +525,20 @@ export default function PlanillaQuincenaWizard() {
                     </td>
                     <td className="px-2 py-3">
                       <div className="flex items-center gap-1">
-                        <div className={`flex-1 text-right font-mono text-sm ${parseFloat(l.monto_adelantos) > 0 ? 'text-red-600 font-semibold' : 'text-muted-foreground'}`}>
-                          {fmt(l.monto_adelantos)}
+                        <div className="flex-1 text-right">
+                          <div className={`font-mono text-sm ${parseFloat(l.monto_adelantos) > 0 ? 'text-red-600 font-semibold' : 'text-muted-foreground'}`}>
+                            {fmt(l.monto_adelantos)}
+                          </div>
+                          {(l.adelantos_ids?.length || 0) > 0 && (
+                            <div className="text-[10px] text-blue-600 font-medium mt-0.5">
+                              {l.adelantos_ids.length} adelanto{l.adelantos_ids.length !== 1 ? 's' : ''} aplicado{l.adelantos_ids.length !== 1 ? 's' : ''}
+                            </div>
+                          )}
                         </div>
-                        {estado === 'borrador' && (
+                        {editableHoras && (
                           <button onClick={() => handleAbrirAdelantos(idx)}
-                            className="h-7 w-7 flex items-center justify-center rounded-md bg-blue-500/10 hover:bg-blue-500/20 text-blue-600 transition-colors"
-                            title="Ver/incluir adelantos pendientes">
+                            className={`h-7 w-7 flex items-center justify-center rounded-md transition-colors ${(l.adelantos_ids?.length || 0) > 0 ? 'bg-blue-500/15 hover:bg-blue-500/25 text-blue-700' : 'bg-blue-500/10 hover:bg-blue-500/20 text-blue-600'}`}
+                            title={(l.adelantos_ids?.length || 0) > 0 ? 'Editar adelantos aplicados (puedes desmarcar para postergar)' : 'Ver/incluir adelantos pendientes'}>
                             <Plus size={14}/>
                           </button>
                         )}
@@ -453,8 +549,28 @@ export default function PlanillaQuincenaWizard() {
                         {fmt(l.neto)}
                       </div>
                     </td>
+                    {mostrarColumnaPago && (
+                      <td className="px-3 py-3 text-center">
+                        {pagado ? (
+                          <button onClick={() => setVerPagosModal({ linea: l })}
+                            className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-700 dark:text-emerald-400 text-[11px] font-semibold transition-colors"
+                            title="Ver detalle de medios de pago usados"
+                            data-testid={`ver-pago-${l.id}`}>
+                            <Check size={12}/> Pagado
+                          </button>
+                        ) : (
+                          <button onClick={() => handleAbrirPagoModal(l)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium rounded-md bg-blue-600 text-white hover:bg-blue-700 transition-colors shadow-sm"
+                            data-testid={`pagar-trabajador-${l.id}`}
+                            title="Registrar pago de este trabajador">
+                            <CreditCard size={12}/> Pagar
+                          </button>
+                        )}
+                      </td>
+                    )}
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
               <tfoot className="bg-muted/40 border-t-2 border-border">
                 <tr className="font-semibold text-xs">
@@ -467,6 +583,11 @@ export default function PlanillaQuincenaWizard() {
                   <td className="px-4 py-3 text-right font-mono text-base font-bold text-emerald-700 dark:text-emerald-400 bg-emerald-500/10">
                     {fmt(totales.neto)}
                   </td>
+                  {mostrarColumnaPago && (
+                    <td className="px-3 py-3 text-center text-[11px] text-muted-foreground">
+                      {numPagados}/{lineas.length}
+                    </td>
+                  )}
                 </tr>
               </tfoot>
             </table>
@@ -498,29 +619,14 @@ export default function PlanillaQuincenaWizard() {
                   </button>
                 </>
               )}
-              {estado === 'aprobada' && (
-                <button onClick={() => setStep(3)}
-                  className="inline-flex items-center gap-1.5 bg-emerald-600 text-white px-3 py-2 text-sm font-medium rounded-md hover:bg-emerald-700">
-                  <CreditCard size={14}/> Registrar pago
-                </button>
+              {estado === 'pagada' && (
+                <div className="inline-flex items-center gap-2 px-3 py-2 rounded-md bg-emerald-500/10 text-emerald-700 dark:text-emerald-400 text-xs font-medium">
+                  <Check size={14}/> Planilla completamente pagada
+                </div>
               )}
             </div>
           </div>
         </div>
-      )}
-
-      {/* PASO 3 — Medios de pago POR TRABAJADOR */}
-      {step === 3 && planillaId && (
-        <PasoPagos
-          planillaId={planillaId}
-          lineas={lineas}
-          totalNeto={totales.neto || 0}
-          cuentas={cuentas}
-          estado={estado}
-          existingPagos={existingPagos}
-          onPagada={() => navigate(`/planillas-quincena/${planillaId}`)}
-          onBack={() => setStep(2)}
-        />
       )}
 
       {/* Modal adelantos */}
@@ -538,6 +644,11 @@ export default function PlanillaQuincenaWizard() {
                 <X size={18}/>
               </button>
             </div>
+            {adelantosModal.adelantos.length > 0 && (
+              <div className="px-5 py-2.5 bg-blue-500/5 border-b border-border text-xs text-blue-700 dark:text-blue-400">
+                💡 Los adelantos pendientes se aplican automáticamente. Haz click en uno para <strong>desmarcarlo</strong> y postergarlo a otra quincena.
+              </div>
+            )}
             <div className="max-h-[400px] overflow-y-auto">
               {adelantosModal.adelantos.length === 0 ? (
                 <div className="p-10 text-center text-muted-foreground text-sm">
@@ -549,7 +660,7 @@ export default function PlanillaQuincenaWizard() {
                   <div key={a.id} className={`flex items-center justify-between px-5 py-3 border-b border-border hover:bg-muted/30 cursor-pointer ${yaEsta ? 'bg-blue-500/5' : ''}`}
                        onClick={() => handleToggleAdelanto(a)}>
                     <div className="flex-1">
-                      <div className="text-xs text-muted-foreground">{fmtDate(a.fecha)} · {a.cuenta_nombre}</div>
+                      <div className="text-xs text-muted-foreground">{fmtDate(a.fecha)}{a.cuenta_nombre ? ` · ${a.cuenta_nombre}` : ''}</div>
                       <div className="font-medium">{a.motivo || 'Sin motivo'}</div>
                     </div>
                     <div className="text-right">
@@ -558,11 +669,11 @@ export default function PlanillaQuincenaWizard() {
                     <div className="ml-3">
                       {yaEsta ? (
                         <span className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] bg-blue-500/10 text-blue-700 dark:text-blue-400 font-medium">
-                          <Check size={12}/> Incluido
+                          <Check size={12}/> Aplicado
                         </span>
                       ) : (
-                        <span className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] border border-border text-muted-foreground">
-                          <Plus size={12}/> Incluir
+                        <span className="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] border border-amber-500/30 bg-amber-500/5 text-amber-700 dark:text-amber-400 font-medium">
+                          ⏭ Postergado
                         </span>
                       )}
                     </div>
@@ -579,255 +690,354 @@ export default function PlanillaQuincenaWizard() {
           </div>
         </div>
       )}
+
+      {/* Modal pago por trabajador */}
+      {pagoModal && (
+        <PagarTrabajadorModal
+          linea={pagoModal.linea}
+          cuentas={cuentas}
+          planillaId={planillaId}
+          periodoLabel={`${MESES[mes-1]} ${anio} · Q${quincena}`}
+          onClose={() => setPagoModal(null)}
+          onPaid={async () => {
+            setPagoModal(null);
+            await reload();
+          }}
+        />
+      )}
+
+      {/* Modal detalle de pago registrado */}
+      {verPagosModal && (
+        <VerPagosDetalleModal
+          linea={verPagosModal.linea}
+          pagos={pagos.filter(p => p.detalle_id === verPagosModal.linea.id)}
+          periodoLabel={`${MESES[mes-1]} ${anio} · Q${quincena}`}
+          onClose={() => setVerPagosModal(null)}
+          onAnular={async () => {
+            setVerPagosModal(null);
+            await handleAnularPagoTrabajador(verPagosModal.linea);
+          }}
+        />
+      )}
     </div>
   );
 }
 
 // ─────────────────────────────────────────────────
-// Paso 3 — Medios de pago POR TRABAJADOR
+// Modal: Pagar UN trabajador
 // ─────────────────────────────────────────────────
-function PasoPagos({ planillaId, lineas, totalNeto, cuentas, estado, existingPagos, onPagada, onBack }) {
-  // Estado: map de detalle_id → [medios]
-  const [pagosPorDetalle, setPagosPorDetalle] = useState({});
+function PagarTrabajadorModal({ linea, cuentas, planillaId, periodoLabel, onClose, onPaid }) {
+  const neto = parseFloat(linea.neto) || 0;
+  const [medios, setMedios] = useState([]);
   const [saving, setSaving] = useState(false);
 
-  // Al montar: auto-poblar desde los medios_pago_default de cada línea
-  useEffect(() => {
-    const mapa = {};
-    lineas.forEach(l => {
-      const neto = parseFloat(l.neto) || 0;
-      const defaults = l.medios_pago_default || [];
-      if (defaults.length > 0) {
-        // Distribuir según porcentajes. El último absorbe redondeo.
-        let restante = neto;
-        mapa[l.id] = defaults.map((m, idx) => {
-          const monto = idx === defaults.length - 1
-            ? +restante.toFixed(2)
-            : +(neto * (parseFloat(m.porcentaje) / 100)).toFixed(2);
-          restante -= monto;
-          return { cuenta_id: m.cuenta_id, monto, referencia: '' };
-        });
-      } else {
-        // Sin defaults: un solo medio vacío con el neto completo
-        mapa[l.id] = [{ cuenta_id: '', monto: neto.toFixed(2), referencia: '' }];
-      }
-    });
-    setPagosPorDetalle(mapa);
-  }, [lineas]);
+  // Filtro de cuentas visibles según la unidad interna del trabajador:
+  //  - Cuentas reales (no ficticias): siempre visibles
+  //  - Cuenta ficticia: solo si corresponde a la unidad interna del trabajador
+  //    (un trabajador de Corte solo ve "Cuenta Corte Interno", no las otras unidades)
+  const cuentasVisibles = (cuentas || []).filter(c => {
+    if (!c.es_ficticia) return true;
+    return linea.unidad_interna_id && c.unidad_interna_id === linea.unidad_interna_id;
+  });
+  const tieneUnidadInterna = !!linea.unidad_interna_id;
+  const cuentaUnidadInterna = cuentasVisibles.find(c => c.es_ficticia);
 
-  const actualizar = (detalleId, idx, campo, valor) => {
-    setPagosPorDetalle(prev => {
-      const lista = [...(prev[detalleId] || [])];
-      lista[idx] = { ...lista[idx], [campo]: valor };
-      return { ...prev, [detalleId]: lista };
+  // Auto-poblar desde medios_pago_default; el último absorbe el resto
+  useEffect(() => {
+    const defaults = linea.medios_pago_default || [];
+    if (defaults.length > 0) {
+      let restante = neto;
+      const arr = defaults.map((m, idx) => {
+        const monto = idx === defaults.length - 1
+          ? +restante.toFixed(2)
+          : +(neto * (parseFloat(m.porcentaje) / 100)).toFixed(2);
+        restante -= monto;
+        return {
+          cuenta_id: String(m.cuenta_id),
+          cuenta_nombre: m.cuenta_nombre,
+          porcentaje: m.porcentaje,
+          monto: monto.toFixed(2),
+          referencia: '',
+        };
+      });
+      setMedios(arr);
+    } else {
+      setMedios([{ cuenta_id: '', monto: neto.toFixed(2), referencia: '' }]);
+    }
+  }, [linea.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const suma = medios.reduce((s, m) => s + (parseFloat(m.monto) || 0), 0);
+  const diff = +(neto - suma).toFixed(2);
+  const ok = Math.abs(neto - suma) < 0.01;
+
+  const actualizar = (idx, campo, valor) => {
+    setMedios(prev => {
+      const arr = [...prev];
+      arr[idx] = { ...arr[idx], [campo]: valor };
+      return arr;
     });
   };
-  const agregar = (detalleId) => setPagosPorDetalle(prev => ({
-    ...prev,
-    [detalleId]: [...(prev[detalleId] || []), { cuenta_id: '', monto: '', referencia: '' }],
-  }));
-  const eliminar = (detalleId, idx) => setPagosPorDetalle(prev => ({
-    ...prev,
-    [detalleId]: (prev[detalleId] || []).filter((_, i) => i !== idx),
-  }));
+  const agregar = () => setMedios(prev => [...prev, { cuenta_id: '', monto: '', referencia: '' }]);
+  const eliminar = (idx) => setMedios(prev => prev.length > 1 ? prev.filter((_, i) => i !== idx) : prev);
 
-  // Validación por trabajador
-  const validaciones = lineas.map(l => {
-    const medios = pagosPorDetalle[l.id] || [];
-    const suma = medios.reduce((s, m) => s + (parseFloat(m.monto) || 0), 0);
-    const neto = parseFloat(l.neto) || 0;
-    return { linea: l, suma, neto, diff: +(neto - suma).toFixed(2), ok: Math.abs(neto - suma) < 0.01 };
-  });
-
-  const totalSuma = validaciones.reduce((s, v) => s + v.suma, 0);
-  const todoOk = validaciones.every(v => v.ok);
+  const ajustarALNeto = () => {
+    if (medios.length === 0) return;
+    setMedios(prev => {
+      const arr = prev.map(m => ({ ...m }));
+      // Todos menos el último se mantienen; el último toma lo que falte
+      let acumulado = 0;
+      for (let i = 0; i < arr.length - 1; i++) {
+        acumulado += parseFloat(arr[i].monto) || 0;
+      }
+      arr[arr.length - 1].monto = (+(neto - acumulado).toFixed(2)).toFixed(2);
+      return arr;
+    });
+  };
 
   const handlePagar = async () => {
-    if (!todoOk) {
-      const err = validaciones.find(v => !v.ok);
-      toast.error(`${err.linea.nombre}: medios (${fmt(err.suma)}) ≠ neto (${fmt(err.neto)})`);
+    if (!ok) {
+      toast.error(`Suma (${fmt(suma)}) no coincide con neto (${fmt(neto)})`);
       return;
     }
-    if (!window.confirm(`¿Pagar planilla de ${fmt(totalNeto)}?\nSe generarán egresos reales.`)) return;
+    const mediosValidos = medios.filter(m => m.cuenta_id && parseFloat(m.monto) > 0);
+    if (mediosValidos.length === 0) {
+      toast.error('Agrega al menos un medio de pago');
+      return;
+    }
     setSaving(true);
     try {
-      await pagarPlanillaQuincena(planillaId, {
-        pagos_por_trabajador: lineas.map(l => ({
-          detalle_id: l.id,
-          medios: (pagosPorDetalle[l.id] || [])
-            .filter(m => m.cuenta_id && parseFloat(m.monto) > 0)
-            .map(m => ({
-              cuenta_id: parseInt(m.cuenta_id),
-              monto: parseFloat(m.monto),
-              referencia: m.referencia || null,
-            })),
+      await pagarDetallePlanilla(planillaId, linea.id, {
+        medios: mediosValidos.map(m => ({
+          cuenta_id: parseInt(m.cuenta_id),
+          monto: parseFloat(m.monto),
+          referencia: m.referencia || null,
         })),
       });
-      toast.success('Planilla pagada exitosamente');
-      onPagada();
+      toast.success(`Pago de ${linea.nombre} registrado`);
+      onPaid();
     } catch (e) {
       toast.error(typeof e.response?.data?.detail === 'string' ? e.response.data.detail : 'Error al pagar');
     } finally { setSaving(false); }
   };
 
-  const handleAnular = async () => {
-    if (!window.confirm('¿Anular el pago? Se revertirán los egresos y los adelantos volverán a pendientes.')) return;
-    setSaving(true);
-    try {
-      await anularPagoPlanillaQuincena(planillaId);
-      toast.success('Pago anulado.');
-      onPagada();
-    } catch (e) {
-      toast.error(typeof e.response?.data?.detail === 'string' ? e.response.data.detail : 'Error');
-    } finally { setSaving(false); }
-  };
-
-  // Estado PAGADA — mostrar resumen de pagos aplicados
-  if (estado === 'pagada') {
-    const pagosPorDet = {};
-    existingPagos.forEach(p => {
-      const k = p.detalle_id || 0;
-      if (!pagosPorDet[k]) pagosPorDet[k] = [];
-      pagosPorDet[k].push(p);
-    });
-    return (
-      <div className="bg-card rounded-xl border border-border p-6 space-y-4">
-        <div className="bg-emerald-500/5 border border-emerald-500/20 rounded-md p-4 flex items-center gap-3">
-          <Check size={20} className="text-emerald-600"/>
-          <div>
-            <div className="font-semibold text-emerald-700">Planilla pagada</div>
-            <div className="text-xs text-muted-foreground mt-0.5">Los egresos ya se generaron en las cuentas.</div>
-          </div>
-        </div>
-        <div className="space-y-3">
-          {lineas.map(l => (
-            <div key={l.id} className="border border-border rounded-md p-3">
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
-                  <div className="h-7 w-7 rounded-full bg-gradient-to-br from-blue-500 to-emerald-500 flex items-center justify-center text-white text-[10px] font-semibold">
-                    {(l.nombre || '?').substring(0, 2).toUpperCase()}
-                  </div>
-                  <div>
-                    <div className="font-semibold text-sm">{l.nombre}</div>
-                    <div className="text-[10px] text-muted-foreground">Neto: {fmt(l.neto)}</div>
-                  </div>
-                </div>
-              </div>
-              <div className="space-y-1">
-                {(pagosPorDet[l.id] || []).map(p => (
-                  <div key={p.id} className="flex items-center justify-between text-sm bg-muted/30 rounded px-2 py-1">
-                    <span className="text-xs">{p.cuenta_nombre}{p.referencia ? ` · ${p.referencia}` : ''}</span>
-                    <span className="font-mono">{fmt(p.monto)}</span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className="flex justify-between pt-2 border-t border-border">
-          <button onClick={onBack} className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-md border border-border hover:bg-muted">
-            <ChevronLeft size={14}/> Ver tabla
-          </button>
-          <button onClick={handleAnular} disabled={saving}
-            className="inline-flex items-center gap-1.5 bg-red-600 text-white px-3 py-2 text-sm font-medium rounded-md hover:bg-red-700 disabled:opacity-50">
-            {saving ? 'Anulando…' : 'Anular pago'}
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   return (
-    <div className="space-y-4">
-      <div className="bg-card rounded-xl border border-border p-4">
-        <h2 className="text-lg font-semibold flex items-center gap-2 mb-1"><CreditCard size={18}/> Pago por trabajador</h2>
-        <p className="text-xs text-muted-foreground">
-          Cada trabajador tiene sus propios medios de pago. Se pre-poblaron según los defaults de su ficha.
-        </p>
-      </div>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+         onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} className="bg-card rounded-xl shadow-2xl w-full max-w-2xl border border-border">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+          <div className="flex items-center gap-3">
+            <div className="h-10 w-10 rounded-full bg-gradient-to-br from-blue-500 to-emerald-500 flex items-center justify-center text-white text-xs font-semibold">
+              {(linea.nombre || '?').substring(0, 2).toUpperCase()}
+            </div>
+            <div>
+              <h2 className="text-base font-semibold flex items-center gap-2">
+                <CreditCard size={16}/> Pagar {linea.nombre}
+              </h2>
+              <p className="text-[11px] text-muted-foreground mt-0.5">{linea.area}{linea.unidad_interna_nombre ? ' · '+linea.unidad_interna_nombre : ''} · {periodoLabel}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted">
+            <X size={18}/>
+          </button>
+        </div>
 
-      <div className="space-y-3">
-        {validaciones.map(({ linea: l, suma, neto, diff, ok }) => {
-          const medios = pagosPorDetalle[l.id] || [];
-          return (
-            <div key={l.id} className={`bg-card rounded-xl border p-4 ${ok ? 'border-border' : 'border-amber-500/40'}`}>
-              <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center gap-2.5">
-                  <div className="h-9 w-9 rounded-full bg-gradient-to-br from-blue-500 to-emerald-500 flex items-center justify-center text-white text-[11px] font-semibold">
-                    {(l.nombre || '?').substring(0, 2).toUpperCase()}
-                  </div>
-                  <div>
-                    <div className="font-semibold text-sm">{l.nombre}</div>
-                    <div className="text-[10px] text-muted-foreground">{l.area}{l.unidad_interna_nombre ? ` · ${l.unidad_interna_nombre}` : ''}</div>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <div className="text-[10px] uppercase tracking-wider text-muted-foreground">Neto a pagar</div>
-                  <div className="text-base font-bold font-mono text-emerald-700 dark:text-emerald-400">{fmt(neto)}</div>
-                </div>
-              </div>
+        <div className="px-5 py-4 space-y-4">
+          <div className="flex items-center justify-between bg-emerald-500/5 border border-emerald-500/20 rounded-md px-3 py-2">
+            <div className="text-xs text-muted-foreground">Neto a pagar</div>
+            <div className="text-xl font-bold font-mono text-emerald-700 dark:text-emerald-400">{fmt(neto)}</div>
+          </div>
 
-              <div className="space-y-2">
-                {medios.map((m, idx) => (
-                  <div key={idx} className="grid grid-cols-12 gap-2 items-center">
-                    <select value={m.cuenta_id} onChange={e => actualizar(l.id, idx, 'cuenta_id', e.target.value)}
-                      className="col-span-5 px-3 py-2 text-sm rounded-md border border-border bg-background">
-                      <option value="">— Cuenta —</option>
-                      {cuentas.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
-                    </select>
-                    <input type="number" step="0.01" min="0" placeholder="Monto" value={m.monto}
-                      onChange={e => actualizar(l.id, idx, 'monto', e.target.value)}
-                      className="col-span-3 px-3 py-2 text-sm rounded-md border border-border bg-background font-mono" />
-                    <input type="text" placeholder="Referencia" value={m.referencia}
-                      onChange={e => actualizar(l.id, idx, 'referencia', e.target.value)}
-                      className="col-span-3 px-3 py-2 text-sm rounded-md border border-border bg-background" />
-                    <button onClick={() => eliminar(l.id, idx)} disabled={medios.length === 1}
-                      className="col-span-1 h-9 flex items-center justify-center rounded-md hover:bg-red-500/10 text-red-600 disabled:opacity-30">
-                      <Trash2 size={14}/>
-                    </button>
-                  </div>
-                ))}
-                <button onClick={() => agregar(l.id)} type="button"
-                  className="inline-flex items-center gap-1.5 px-3 py-1 text-xs rounded-md border border-dashed border-border hover:bg-muted">
-                  <Plus size={12}/> Agregar medio
+          {(linea.medios_pago_default || []).length === 0 && (
+            <div className="text-[11px] text-amber-700 bg-amber-500/10 border border-amber-500/20 rounded-md px-3 py-2 flex items-start gap-2">
+              <AlertTriangle size={14} className="mt-0.5 shrink-0"/>
+              <span>Este trabajador no tiene medios de pago por defecto. Agrégalos manualmente abajo o configúralos en la ficha del trabajador para auto-poblar próximas planillas.</span>
+            </div>
+          )}
+
+          {tieneUnidadInterna && cuentaUnidadInterna && (
+            <div className="text-[11px] text-blue-700 bg-blue-500/5 border border-blue-500/20 rounded-md px-3 py-2 flex items-start gap-2">
+              <CreditCard size={14} className="mt-0.5 shrink-0"/>
+              <span>
+                Este trabajador pertenece a <strong>{linea.unidad_interna_nombre}</strong> · tienes disponible la cuenta interna{' '}
+                <strong>{cuentaUnidadInterna.nombre}</strong> para imputar el costo a la unidad.
+              </span>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <div className="grid grid-cols-12 gap-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground px-1">
+              <div className="col-span-5">Cuenta</div>
+              <div className="col-span-3 text-right">Monto</div>
+              <div className="col-span-3">Referencia</div>
+              <div className="col-span-1"></div>
+            </div>
+            {medios.map((m, idx) => (
+              <div key={idx} className="grid grid-cols-12 gap-2 items-center">
+                <select value={m.cuenta_id} onChange={e => actualizar(idx, 'cuenta_id', e.target.value)}
+                  className="col-span-5 px-3 py-2 text-sm rounded-md border border-border bg-background"
+                  data-testid={`pago-cuenta-${idx}`}>
+                  <option value="">— Cuenta —</option>
+                  {cuentasVisibles.map(c => (
+                    <option key={c.id} value={c.id}>
+                      {c.nombre}{c.es_ficticia ? ' (unidad interna)' : ''}
+                    </option>
+                  ))}
+                </select>
+                <input type="number" step="0.01" min="0" placeholder="0.00" value={m.monto}
+                  onChange={e => actualizar(idx, 'monto', e.target.value)}
+                  className="col-span-3 px-3 py-2 text-sm text-right rounded-md border border-border bg-background font-mono"
+                  data-testid={`pago-monto-${idx}`}/>
+                <input type="text" placeholder="Op., nota..." value={m.referencia}
+                  onChange={e => actualizar(idx, 'referencia', e.target.value)}
+                  className="col-span-3 px-3 py-2 text-sm rounded-md border border-border bg-background" />
+                <button onClick={() => eliminar(idx)} disabled={medios.length === 1}
+                  className="col-span-1 h-9 flex items-center justify-center rounded-md hover:bg-red-500/10 text-red-600 disabled:opacity-30">
+                  <Trash2 size={14}/>
                 </button>
               </div>
-
-              <div className={`mt-2 text-[11px] flex items-center gap-1.5 ${ok ? 'text-emerald-700' : 'text-amber-700'}`}>
-                {ok ? <Check size={12}/> : <AlertTriangle size={12}/>}
-                Suma: <strong className="font-mono">{fmt(suma)}</strong>
-                {!ok && <span> · Diferencia: <strong className="font-mono">{fmt(diff)}</strong></span>}
-                {ok && <span>· coincide con neto</span>}
-              </div>
+            ))}
+            <div className="flex items-center justify-between">
+              <button onClick={agregar} type="button"
+                className="inline-flex items-center gap-1.5 px-3 py-1 text-xs rounded-md border border-dashed border-border hover:bg-muted">
+                <Plus size={12}/> Agregar medio
+              </button>
+              <button onClick={ajustarALNeto} type="button"
+                className="inline-flex items-center gap-1.5 px-3 py-1 text-xs rounded-md text-blue-600 hover:bg-blue-500/10"
+                title="Ajusta el último medio para que la suma sea igual al neto">
+                Ajustar al neto
+              </button>
             </div>
-          );
-        })}
-      </div>
+          </div>
 
-      <div className="bg-muted/40 rounded-md p-3 flex items-center justify-between">
-        <span className="text-sm font-medium">Total consolidado</span>
-        <span className="text-lg font-bold font-mono">{fmt(totalSuma)} / {fmt(totalNeto)}</span>
-      </div>
+          <div className={`rounded-md px-3 py-2 flex items-center justify-between text-sm ${ok ? 'bg-emerald-500/10 border border-emerald-500/20' : 'bg-amber-500/10 border border-amber-500/20'}`}>
+            <div className="flex items-center gap-1.5 text-xs">
+              {ok ? <Check size={14} className="text-emerald-600"/> : <AlertTriangle size={14} className="text-amber-600"/>}
+              <span>Suma medios</span>
+            </div>
+            <div className="flex items-center gap-4">
+              <span className={`font-mono font-semibold ${ok ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'}`}>
+                {fmt(suma)}
+              </span>
+              {!ok && (
+                <span className="text-[11px] text-amber-700 dark:text-amber-400">
+                  Diferencia: <strong className="font-mono">{fmt(diff)}</strong>
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
 
-      <div className="flex justify-between pt-2 border-t border-border">
-        <button onClick={onBack} className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-md border border-border hover:bg-muted">
-          <ChevronLeft size={14}/> Volver
-        </button>
-        <button onClick={handlePagar} disabled={saving || !todoOk}
-          className="inline-flex items-center gap-1.5 bg-emerald-600 text-white px-4 py-2 text-sm font-medium rounded-md hover:bg-emerald-700 disabled:opacity-50"
-          data-testid="btn-pagar-planilla">
-          <Check size={14}/> {saving ? 'Pagando…' : 'Aprobar y pagar'}
-        </button>
+        <div className="flex justify-between items-center px-5 py-3 border-t border-border bg-muted/20">
+          <button onClick={onClose} className="px-3 py-2 text-sm rounded-md border border-border hover:bg-muted">
+            Cancelar
+          </button>
+          <button onClick={handlePagar} disabled={saving || !ok}
+            className="inline-flex items-center gap-1.5 bg-emerald-600 text-white px-4 py-2 text-sm font-medium rounded-md hover:bg-emerald-700 disabled:opacity-50"
+            data-testid="btn-confirmar-pago">
+            <Check size={14}/> {saving ? 'Registrando…' : 'Registrar pago'}
+          </button>
+        </div>
       </div>
     </div>
   );
 }
 
+// ─────────────────────────────────────────────────
+// Modal: Ver detalle del pago registrado
+// ─────────────────────────────────────────────────
+function VerPagosDetalleModal({ linea, pagos, periodoLabel, onClose, onAnular }) {
+  const total = pagos.reduce((s, p) => s + parseFloat(p.monto || 0), 0);
+  const fechaPago = linea.pagado_at ? new Date(linea.pagado_at).toLocaleString('es-PE') : null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4"
+         onClick={onClose}>
+      <div onClick={e => e.stopPropagation()} className="bg-card rounded-xl shadow-2xl w-full max-w-xl border border-border">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-border">
+          <div className="flex items-center gap-3">
+            <div className="h-10 w-10 rounded-full bg-gradient-to-br from-emerald-500 to-blue-500 flex items-center justify-center text-white text-xs font-semibold">
+              {(linea.nombre || '?').substring(0, 2).toUpperCase()}
+            </div>
+            <div>
+              <h2 className="text-base font-semibold flex items-center gap-2">
+                <Check size={16} className="text-emerald-600"/> Pago de {linea.nombre}
+              </h2>
+              <p className="text-[11px] text-muted-foreground mt-0.5">
+                {linea.area}{linea.unidad_interna_nombre ? ' · '+linea.unidad_interna_nombre : ''} · {periodoLabel}
+              </p>
+            </div>
+          </div>
+          <button onClick={onClose} className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted">
+            <X size={18}/>
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-3">
+          <div className="flex items-center justify-between bg-emerald-500/5 border border-emerald-500/20 rounded-md px-3 py-2">
+            <div>
+              <div className="text-xs text-muted-foreground">Total pagado</div>
+              {fechaPago && <div className="text-[10px] text-muted-foreground mt-0.5">{fechaPago}{linea.pagado_por ? ` · ${linea.pagado_por}` : ''}</div>}
+            </div>
+            <div className="text-xl font-bold font-mono text-emerald-700 dark:text-emerald-400">{fmt(total)}</div>
+          </div>
+
+          {pagos.length === 0 ? (
+            <div className="text-xs text-muted-foreground italic py-4 text-center">
+              No hay medios de pago registrados.
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground px-1">
+                Medios de pago utilizados
+              </div>
+              {pagos.map((p, idx) => (
+                <div key={p.id || idx} className="flex items-center justify-between bg-muted/30 rounded-md px-3 py-2.5 border border-border">
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium text-sm truncate">{p.cuenta_nombre || `Cuenta #${p.cuenta_id}`}</div>
+                    {p.referencia && (
+                      <div className="text-[11px] text-muted-foreground mt-0.5 truncate">
+                        Ref: {p.referencia}
+                      </div>
+                    )}
+                    {p.notas && (
+                      <div className="text-[11px] text-muted-foreground italic mt-0.5 truncate">
+                        {p.notas}
+                      </div>
+                    )}
+                  </div>
+                  <div className="font-mono text-sm font-semibold ml-3 shrink-0">{fmt(p.monto)}</div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="bg-blue-500/5 border border-blue-500/20 rounded-md px-3 py-2 text-[11px] text-blue-700 dark:text-blue-400">
+            💡 Estos movimientos ya aparecen en <strong>Tesorería</strong> y <strong>Pagos</strong> como EGRESOs.
+          </div>
+        </div>
+
+        <div className="flex justify-between items-center px-5 py-3 border-t border-border bg-muted/20">
+          <button onClick={onClose} className="px-3 py-2 text-sm rounded-md border border-border hover:bg-muted">
+            Cerrar
+          </button>
+          <button onClick={onAnular}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm rounded-md bg-red-600 text-white hover:bg-red-700"
+            data-testid="btn-anular-pago-desde-detalle">
+            <RotateCcw size={14}/> Anular pago
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────
+// Step indicator (2 pasos)
+// ─────────────────────────────────────────────────
 function StepIndicator({ step }) {
   const steps = [
     { n: 1, label: 'Período' },
-    { n: 2, label: 'Cálculo' },
-    { n: 3, label: 'Pago' },
+    { n: 2, label: 'Cálculo y pago' },
   ];
   return (
     <div className="flex items-center gap-2 text-xs">

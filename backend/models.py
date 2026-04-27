@@ -535,6 +535,7 @@ class GastoLineaBase(BaseModel):
     descripcion: Optional[str] = None
     linea_negocio_id: Optional[int] = None
     centro_costo_id: Optional[int] = None
+    unidad_interna_id: Optional[int] = None
     importe: float
     igv_aplica: bool = True
 
@@ -547,6 +548,7 @@ class GastoLinea(GastoLineaBase):
     categoria_nombre: Optional[str] = None
     categoria_padre_id: Optional[int] = None
     categoria_padre_nombre: Optional[str] = None
+    unidad_interna_nombre: Optional[str] = None
     created_at: Optional[datetime] = None
 
 class GastoBase(BaseModel):

@@ -97,6 +97,21 @@ export default function GastosUnidadInterna() {
 
   const totalGastos = gastos.reduce((sum, g) => sum + (g.monto || 0), 0);
 
+  // Agrupado por origen (para mostrar chips resumen)
+  const porOrigen = gastos.reduce((acc, g) => {
+    const k = g.origen || 'directo';
+    acc[k] = (acc[k] || 0) + (g.monto || 0);
+    return acc;
+  }, {});
+
+  const ORIGEN_LABELS = {
+    directo:  { label: 'Directo',  color: '#64748b', bg: '#f1f5f9' },
+    factura:  { label: 'Factura',  color: '#7c3aed', bg: '#f5f3ff' },
+    planilla: { label: 'Planilla', color: '#0891b2', bg: '#ecfeff' },
+    destajo:  { label: 'Destajo',  color: '#0e7490', bg: '#cffafe' },
+    adelanto: { label: 'Adelanto', color: '#d97706', bg: '#fffbeb' },
+  };
+
   const s = {
     page: { padding: '1.5rem', maxWidth: 1200, margin: '0 auto' },
     header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' },
@@ -144,12 +159,25 @@ export default function GastosUnidadInterna() {
       </div>
 
       {gastos.length > 0 && (
-        <div style={s.summaryCard}>
+        <div style={{ ...s.summaryCard, flexWrap: 'wrap' }}>
           <span style={{ fontWeight: 700, color: 'var(--danger-text)', fontSize: '0.85rem' }}>Total Gastos:</span>
           <span style={{ fontWeight: 800, color: 'var(--danger-text)', fontSize: '1rem', fontFamily: "'JetBrains Mono', monospace" }}>
             {formatCurrency(totalGastos)}
           </span>
           <span style={{ color: 'var(--muted)', fontSize: '0.75rem' }}>({gastos.length} registros)</span>
+          <span style={{ borderLeft: '1px solid var(--border)', height: 18, margin: '0 8px' }}></span>
+          {Object.entries(porOrigen).map(([origen, monto]) => {
+            const o = ORIGEN_LABELS[origen] || ORIGEN_LABELS.directo;
+            return (
+              <span key={origen} style={{
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+                padding: '3px 8px', borderRadius: 6,
+                background: o.bg, color: o.color, fontSize: '0.72rem', fontWeight: 600,
+              }}>
+                {o.label}: <span style={{ fontFamily: "'JetBrains Mono', monospace" }}>{formatCurrency(monto)}</span>
+              </span>
+            );
+          })}
         </div>
       )}
 
@@ -158,11 +186,11 @@ export default function GastosUnidadInterna() {
           <thead>
             <tr>
               <th style={s.th}>Fecha</th>
+              <th style={s.th}>Origen</th>
               <th style={s.th}>Unidad</th>
               <th style={s.th}>Tipo Gasto</th>
               <th style={s.th}>Descripcion</th>
               <th style={{ ...s.th, textAlign: 'right' }}>Monto</th>
-              <th style={s.th}>Registro</th>
               <th style={{ ...s.th, textAlign: 'right' }}>Acciones</th>
             </tr>
           </thead>
@@ -172,23 +200,39 @@ export default function GastosUnidadInterna() {
                 No hay gastos registrados.
               </td></tr>
             )}
-            {gastos.map(g => (
+            {gastos.map(g => {
+              const o = ORIGEN_LABELS[g.origen] || ORIGEN_LABELS.directo;
+              return (
               <tr key={g.id} data-testid={`gasto-row-${g.id}`}>
                 <td style={s.td}>{g.fecha?.slice(0, 10)}</td>
+                <td style={s.td}>
+                  <span style={{
+                    display: 'inline-block', padding: '2px 8px', borderRadius: 4,
+                    background: o.bg, color: o.color, fontSize: '0.7rem', fontWeight: 700,
+                  }}>{o.label}</span>
+                </td>
                 <td style={{ ...s.td, fontWeight: 600 }}>{g.unidad_nombre || '-'}</td>
                 <td style={s.td}><span style={s.badge('amber')}>{g.tipo_gasto}</span></td>
                 <td style={s.td}>{g.descripcion || '-'}</td>
                 <td style={{ ...s.td, textAlign: 'right', fontWeight: 700, color: 'var(--danger-text)', fontFamily: "'JetBrains Mono', monospace" }}>
                   {formatCurrency(g.monto)}
                 </td>
-                <td style={s.td}>{g.registro_id || g.movimiento_id ? <span style={s.badge('')}>{g.registro_id || g.movimiento_id}</span> : <span style={{ color: 'var(--muted)' }}>General</span>}</td>
                 <td style={{ ...s.td, textAlign: 'right' }}>
-                  <button style={{ ...s.btn, ...s.btnGhost, marginRight: 4 }} onClick={() => startEdit(g)}><Pencil size={14} /></button>
-                  <button style={{ ...s.btn, background: 'var(--danger-bg)', color: 'var(--danger-text)', border: '1px solid var(--danger-border)' }}
-                    onClick={() => handleDelete(g.id)}><Trash2 size={14} /></button>
+                  {g.editable ? (
+                    <>
+                      <button style={{ ...s.btn, ...s.btnGhost, marginRight: 4 }} onClick={() => startEdit(g)}><Pencil size={14} /></button>
+                      <button style={{ ...s.btn, background: 'var(--danger-bg)', color: 'var(--danger-text)', border: '1px solid var(--danger-border)' }}
+                        onClick={() => handleDelete(g.id)}><Trash2 size={14} /></button>
+                    </>
+                  ) : (
+                    <span style={{ fontSize: '0.7rem', color: 'var(--muted)', fontStyle: 'italic' }}>
+                      read-only ({g.origen})
+                    </span>
+                  )}
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>

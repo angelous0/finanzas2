@@ -26,8 +26,10 @@ from pydantic import BaseModel, Field
 from typing import Optional, List
 from datetime import date, datetime
 from calendar import monthrange
+import io
 from database import get_pool
 from dependencies import get_empresa_id
+from services.treasury_service import create_movimiento_tesoreria, delete_movimientos_by_origen
 
 
 # Placeholder para usuario actual (sin auth en este proyecto)
@@ -84,6 +86,12 @@ class PagoIn(BaseModel):
 class PagoTrabajadorIn(BaseModel):
     detalle_id: int
     medios: List[PagoIn]
+
+
+class PagarDetalleIn(BaseModel):
+    """Body para pagar un trabajador individual desde la tabla."""
+    medios: List[PagoIn]
+    fecha_pago: Optional[date] = None
 
 
 class PagarIn(BaseModel):
@@ -235,6 +243,25 @@ async def calcular_preview(data: CalcularInput, empresa_id: int = Depends(get_em
                 "porcentaje": float(r['porcentaje']),
             })
 
+        # Precargar adelantos PENDIENTES (no descontados) de todos los trabajadores
+        # — se autoseleccionan en el preview; el usuario puede desmarcar para postergar.
+        adelantos_rows = await conn.fetch("""
+            SELECT id, trabajador_id, fecha, monto, motivo, observaciones
+              FROM finanzas2.fin_adelanto_trabajador
+             WHERE empresa_id = $1 AND descontado = FALSE
+             ORDER BY fecha ASC, id ASC
+        """, empresa_id)
+        adelantos_por_trabajador = {}
+        for r in adelantos_rows:
+            adelantos_por_trabajador.setdefault(r['trabajador_id'], []).append({
+                "id": r['id'],
+                "trabajador_id": r['trabajador_id'],
+                "fecha": str(r['fecha']) if r['fecha'] else None,
+                "monto": float(r['monto'] or 0),
+                "motivo": r['motivo'],
+                "observaciones": r['observaciones'],
+            })
+
         lineas = []
         warnings = []
         for t in trabs:
@@ -255,6 +282,9 @@ async def calcular_preview(data: CalcularInput, empresa_id: int = Depends(get_em
                 })
             # Horas default = horas_quincenales del trabajador
             horas_default = td.get('horas_quincenales') or ajustes_d.get('horas_quincena_default') or 120
+            # Adelantos pendientes del trabajador (auto-seleccionados)
+            adel_pend = adelantos_por_trabajador.get(td['id'], [])
+            monto_adel_auto = sum(a['monto'] for a in adel_pend)
             det = {
                 "trabajador_id": td['id'],
                 "nombre": td['nombre'],
@@ -272,7 +302,10 @@ async def calcular_preview(data: CalcularInput, empresa_id: int = Depends(get_em
                 "horas_extra_25": 0.0,
                 "horas_extra_35": 0.0,
                 "descuento_tardanzas": 0.0,
-                "monto_adelantos": 0.0,
+                "monto_adelantos": float(monto_adel_auto),
+                # Auto-selección de adelantos pendientes (el usuario puede desmarcar)
+                "adelantos_ids": [a['id'] for a in adel_pend],
+                "adelantos_pendientes": adel_pend,
             }
             calc = calcular_linea(det, ajustes_d, afp)
             det.update(calc)
@@ -475,9 +508,33 @@ async def _get_planilla_full(conn, planilla_id: int, empresa_id: int) -> dict:
         SELECT * FROM finanzas2.fin_adelanto_trabajador
          WHERE planilla_id = $1
     """, planilla_id)
+    # Medios de pago por defecto de cada trabajador — para auto-poblar el modal de pago
+    trabajador_ids = list({d['trabajador_id'] for d in dets})
+    medios_por_trabajador = {}
+    if trabajador_ids:
+        medios_rows = await conn.fetch("""
+            SELECT m.trabajador_id, m.cuenta_id, m.porcentaje, m.orden, c.nombre AS cuenta_nombre
+              FROM finanzas2.fin_trabajador_medio_pago_default m
+              LEFT JOIN finanzas2.cont_cuenta_financiera c ON m.cuenta_id = c.id
+             WHERE m.trabajador_id = ANY($1::int[])
+             ORDER BY m.trabajador_id, m.orden
+        """, trabajador_ids)
+        for row in medios_rows:
+            tid = row['trabajador_id']
+            medios_por_trabajador.setdefault(tid, []).append({
+                "cuenta_id": row['cuenta_id'],
+                "cuenta_nombre": row['cuenta_nombre'],
+                "porcentaje": float(row['porcentaje']),
+                "orden": row['orden'],
+            })
+    detalles_out = []
+    for d in dets:
+        dd = dict(d)
+        dd['medios_pago_default'] = medios_por_trabajador.get(d['trabajador_id'], [])
+        detalles_out.append(dd)
     return {
         **dict(cab),
-        "detalles": [dict(d) for d in dets],
+        "detalles": detalles_out,
         "pagos": [dict(p) for p in pagos],
         "adelantos_vinculados": [dict(a) for a in adelantos],
     }
@@ -693,26 +750,32 @@ async def pagar_planilla(
                         if not cta:
                             raise HTTPException(404, f"Cuenta {p.cuenta_id} no encontrada")
 
-                        mov = await conn.fetchrow("""
-                            INSERT INTO finanzas2.fin_movimiento_cuenta
-                                (cuenta_id, empresa_id, tipo, monto, descripcion, fecha, referencia_id, referencia_tipo)
-                            VALUES ($1, $2, 'EGRESO', $3, $4, $5, $6, 'planilla_quincena')
+                        # Primero insertar el registro de pago para obtener el id (origen_id del movimiento)
+                        pago_row = await conn.fetchrow("""
+                            INSERT INTO finanzas2.fin_planilla_quincena_pago
+                                (planilla_id, empresa_id, cuenta_id, detalle_id, monto, referencia, notas, movimiento_cuenta_id)
+                            VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
                             RETURNING id
-                        """, p.cuenta_id, empresa_id, p.monto,
-                             f"Pago planilla {periodo_str} · {det['nombre']}" + (f" — {p.referencia}" if p.referencia else ""),
-                             fecha_pago, str(planilla_id))
+                        """, planilla_id, empresa_id, p.cuenta_id, pt.detalle_id, p.monto, p.referencia, p.notas)
+
+                        mov_id = await create_movimiento_tesoreria(
+                            conn, empresa_id, fecha_pago, 'egreso', float(p.monto),
+                            cuenta_financiera_id=p.cuenta_id,
+                            referencia=p.referencia,
+                            concepto=f"Planilla {periodo_str} · {det['nombre']}",
+                            origen_tipo='planilla_quincena_pago',
+                            origen_id=pago_row['id'],
+                            notas=p.notas,
+                        )
+                        await conn.execute(
+                            "UPDATE finanzas2.fin_planilla_quincena_pago SET movimiento_cuenta_id = $1 WHERE id = $2",
+                            mov_id, pago_row['id'])
 
                         await conn.execute("""
                             UPDATE finanzas2.cont_cuenta_financiera
-                               SET saldo_actual = saldo_actual - $1, updated_at = NOW()
+                               SET saldo_actual = COALESCE(saldo_actual, 0) - $1, updated_at = NOW()
                              WHERE id = $2
                         """, p.monto, p.cuenta_id)
-
-                        await conn.execute("""
-                            INSERT INTO finanzas2.fin_planilla_quincena_pago
-                                (planilla_id, empresa_id, cuenta_id, detalle_id, monto, referencia, notas, movimiento_cuenta_id)
-                            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                        """, planilla_id, empresa_id, p.cuenta_id, pt.detalle_id, p.monto, p.referencia, p.notas, mov['id'])
 
             # Modo LEGACY: pagos consolidados (sin asociar a detalle)
             elif data.pagos:
@@ -728,26 +791,31 @@ async def pagar_planilla(
                     if not cta:
                         raise HTTPException(404, f"Cuenta {p.cuenta_id} no encontrada")
 
-                    mov = await conn.fetchrow("""
-                        INSERT INTO finanzas2.fin_movimiento_cuenta
-                            (cuenta_id, empresa_id, tipo, monto, descripcion, fecha, referencia_id, referencia_tipo)
-                        VALUES ($1, $2, 'EGRESO', $3, $4, $5, $6, 'planilla_quincena')
+                    pago_row = await conn.fetchrow("""
+                        INSERT INTO finanzas2.fin_planilla_quincena_pago
+                            (planilla_id, empresa_id, cuenta_id, monto, referencia, notas, movimiento_cuenta_id)
+                        VALUES ($1, $2, $3, $4, $5, $6, NULL)
                         RETURNING id
-                    """, p.cuenta_id, empresa_id, p.monto,
-                         f"Pago planilla {periodo_str}" + (f" — {p.referencia}" if p.referencia else ""),
-                         fecha_pago, str(planilla_id))
+                    """, planilla_id, empresa_id, p.cuenta_id, p.monto, p.referencia, p.notas)
+
+                    mov_id = await create_movimiento_tesoreria(
+                        conn, empresa_id, fecha_pago, 'egreso', float(p.monto),
+                        cuenta_financiera_id=p.cuenta_id,
+                        referencia=p.referencia,
+                        concepto=f"Planilla {periodo_str}",
+                        origen_tipo='planilla_quincena_pago',
+                        origen_id=pago_row['id'],
+                        notas=p.notas,
+                    )
+                    await conn.execute(
+                        "UPDATE finanzas2.fin_planilla_quincena_pago SET movimiento_cuenta_id = $1 WHERE id = $2",
+                        mov_id, pago_row['id'])
 
                     await conn.execute("""
                         UPDATE finanzas2.cont_cuenta_financiera
-                           SET saldo_actual = saldo_actual - $1, updated_at = NOW()
+                           SET saldo_actual = COALESCE(saldo_actual, 0) - $1, updated_at = NOW()
                          WHERE id = $2
                     """, p.monto, p.cuenta_id)
-
-                    await conn.execute("""
-                        INSERT INTO finanzas2.fin_planilla_quincena_pago
-                            (planilla_id, empresa_id, cuenta_id, monto, referencia, notas, movimiento_cuenta_id)
-                        VALUES ($1, $2, $3, $4, $5, $6, $7)
-                    """, planilla_id, empresa_id, p.cuenta_id, p.monto, p.referencia, p.notas, mov['id'])
             else:
                 raise HTTPException(400, "Debe enviar 'pagos_por_trabajador' o 'pagos'")
 
@@ -769,7 +837,194 @@ async def pagar_planilla(
             return await _get_planilla_full(conn, planilla_id, empresa_id)
 
 
-# ───────── ANULAR PAGO ─────────
+# ───────── PAGAR TRABAJADOR INDIVIDUAL ─────────
+
+@router.post("/planillas-quincena/{planilla_id}/detalles/{detalle_id}/pagar")
+async def pagar_detalle(
+    planilla_id: int,
+    detalle_id: int,
+    data: PagarDetalleIn,
+    empresa_id: int = Depends(get_empresa_id),
+    user=Depends(get_current_user),
+):
+    """Paga UN solo trabajador de la planilla.
+    Si todos los detalles quedan pagados, cambia estado planilla → 'pagada'."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            pl = await conn.fetchrow(
+                "SELECT * FROM finanzas2.fin_planilla_quincena WHERE id = $1 AND empresa_id = $2",
+                planilla_id, empresa_id)
+            if not pl:
+                raise HTTPException(404, "Planilla no encontrada")
+            if pl['estado'] not in ('aprobada', 'pagada'):
+                raise HTTPException(400, f"Planilla debe estar aprobada (estado actual: {pl['estado']})")
+
+            det = await conn.fetchrow("""
+                SELECT * FROM finanzas2.fin_planilla_quincena_detalle
+                 WHERE id = $1 AND planilla_id = $2 AND empresa_id = $3
+            """, detalle_id, planilla_id, empresa_id)
+            if not det:
+                raise HTTPException(404, "Detalle no encontrado")
+            if det['pagado_at'] is not None:
+                raise HTTPException(400, f"{det['nombre']} ya está pagado. Anular pago primero si necesita corregir.")
+
+            neto = float(det['neto'])
+            suma = sum(float(m.monto) for m in data.medios)
+            if abs(suma - neto) > 0.01:
+                raise HTTPException(400,
+                    f"Suma de medios ({suma:.2f}) no coincide con neto del trabajador ({neto:.2f})")
+
+            fecha_pago = data.fecha_pago or date.today()
+            periodo_str = f"{pl['anio']}-{pl['mes']:02d}-Q{pl['quincena']}"
+
+            # Crear egresos por cada medio — se escribe en cont_movimiento_tesoreria
+            # (fuente única para Tesorería, Pagos y Flujo de Caja)
+            for m in data.medios:
+                cta = await conn.fetchrow(
+                    "SELECT id, nombre FROM finanzas2.cont_cuenta_financiera WHERE id = $1 AND empresa_id = $2",
+                    m.cuenta_id, empresa_id)
+                if not cta:
+                    raise HTTPException(404, f"Cuenta {m.cuenta_id} no encontrada")
+
+                # 1) Crear el registro de pago primero (para obtener id como origen del movimiento)
+                pago_row = await conn.fetchrow("""
+                    INSERT INTO finanzas2.fin_planilla_quincena_pago
+                        (planilla_id, empresa_id, cuenta_id, detalle_id, monto, referencia, notas, movimiento_cuenta_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, NULL)
+                    RETURNING id
+                """, planilla_id, empresa_id, m.cuenta_id, detalle_id, m.monto, m.referencia, m.notas)
+
+                # 2) Insertar el movimiento en la tabla única de tesorería
+                mov_id = await create_movimiento_tesoreria(
+                    conn, empresa_id, fecha_pago, 'egreso', float(m.monto),
+                    cuenta_financiera_id=m.cuenta_id,
+                    referencia=m.referencia,
+                    concepto=f"Planilla {periodo_str} · {det['nombre']}",
+                    origen_tipo='planilla_quincena_pago',
+                    origen_id=pago_row['id'],
+                    notas=m.notas,
+                )
+
+                # 3) Amarrar el mov_id al registro de pago
+                await conn.execute(
+                    "UPDATE finanzas2.fin_planilla_quincena_pago SET movimiento_cuenta_id = $1 WHERE id = $2",
+                    mov_id, pago_row['id'])
+
+                # 4) Descontar el saldo de la cuenta
+                await conn.execute("""
+                    UPDATE finanzas2.cont_cuenta_financiera
+                       SET saldo_actual = COALESCE(saldo_actual, 0) - $1, updated_at = NOW()
+                     WHERE id = $2
+                """, m.monto, m.cuenta_id)
+
+            # Marcar adelantos del trabajador como descontados
+            await conn.execute("""
+                UPDATE finanzas2.fin_adelanto_trabajador
+                   SET descontado = TRUE, updated_at = NOW()
+                 WHERE detalle_id = $1 AND empresa_id = $2
+            """, detalle_id, empresa_id)
+
+            # Marcar detalle como pagado
+            await conn.execute("""
+                UPDATE finanzas2.fin_planilla_quincena_detalle
+                   SET pagado_at = NOW(), pagado_por = $1, updated_at = NOW()
+                 WHERE id = $2
+            """, user.get('username') if user else None, detalle_id)
+
+            # Si TODOS los detalles están pagados, marcar planilla como pagada
+            pendientes = await conn.fetchval("""
+                SELECT COUNT(*) FROM finanzas2.fin_planilla_quincena_detalle
+                 WHERE planilla_id = $1 AND pagado_at IS NULL
+            """, planilla_id)
+            if pendientes == 0 and pl['estado'] != 'pagada':
+                await conn.execute("""
+                    UPDATE finanzas2.fin_planilla_quincena
+                       SET estado = 'pagada', fecha_pago = $1,
+                           pagado_at = NOW(), pagado_por = $2, updated_at = NOW()
+                     WHERE id = $3
+                """, fecha_pago, user.get('username') if user else None, planilla_id)
+
+            return await _get_planilla_full(conn, planilla_id, empresa_id)
+
+
+# ───────── ANULAR PAGO INDIVIDUAL ─────────
+
+@router.post("/planillas-quincena/{planilla_id}/detalles/{detalle_id}/anular-pago")
+async def anular_pago_detalle(
+    planilla_id: int,
+    detalle_id: int,
+    empresa_id: int = Depends(get_empresa_id),
+    user=Depends(get_current_user),
+):
+    """Anula el pago de UN solo trabajador (revierte sus egresos)."""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            pl = await conn.fetchrow(
+                "SELECT * FROM finanzas2.fin_planilla_quincena WHERE id = $1 AND empresa_id = $2",
+                planilla_id, empresa_id)
+            if not pl:
+                raise HTTPException(404, "Planilla no encontrada")
+
+            det = await conn.fetchrow("""
+                SELECT * FROM finanzas2.fin_planilla_quincena_detalle
+                 WHERE id = $1 AND planilla_id = $2
+            """, detalle_id, planilla_id)
+            if not det:
+                raise HTTPException(404, "Detalle no encontrado")
+            if det['pagado_at'] is None:
+                raise HTTPException(400, f"{det['nombre']} no está pagado")
+
+            # Revertir pagos del detalle: eliminar movimiento en tesorería + restaurar saldo
+            pagos = await conn.fetch("""
+                SELECT * FROM finanzas2.fin_planilla_quincena_pago
+                 WHERE detalle_id = $1
+            """, detalle_id)
+            for p in pagos:
+                # Eliminar el movimiento de tesorería vinculado
+                await delete_movimientos_by_origen(
+                    conn, empresa_id, 'planilla_quincena_pago', p['id'])
+                # Restaurar saldo de la cuenta
+                await conn.execute("""
+                    UPDATE finanzas2.cont_cuenta_financiera
+                       SET saldo_actual = COALESCE(saldo_actual, 0) + $1, updated_at = NOW()
+                     WHERE id = $2
+                """, p['monto'], p['cuenta_id'])
+
+            # Borrar los pagos del detalle
+            await conn.execute(
+                "DELETE FROM finanzas2.fin_planilla_quincena_pago WHERE detalle_id = $1",
+                detalle_id)
+
+            # Desmarcar adelantos del detalle
+            await conn.execute("""
+                UPDATE finanzas2.fin_adelanto_trabajador
+                   SET descontado = FALSE, updated_at = NOW()
+                 WHERE detalle_id = $1 AND empresa_id = $2
+            """, detalle_id, empresa_id)
+
+            # Desmarcar detalle
+            await conn.execute("""
+                UPDATE finanzas2.fin_planilla_quincena_detalle
+                   SET pagado_at = NULL, pagado_por = NULL, updated_at = NOW()
+                 WHERE id = $1
+            """, detalle_id)
+
+            # Si la planilla estaba pagada, volver a aprobada
+            if pl['estado'] == 'pagada':
+                await conn.execute("""
+                    UPDATE finanzas2.fin_planilla_quincena
+                       SET estado = 'aprobada', fecha_pago = NULL,
+                           anulado_at = NOW(), anulado_por = $1,
+                           updated_at = NOW()
+                     WHERE id = $2
+                """, user.get('username') if user else None, planilla_id)
+
+            return await _get_planilla_full(conn, planilla_id, empresa_id)
+
+
+# ───────── ANULAR PAGO (TODA LA PLANILLA) ─────────
 
 @router.post("/planillas-quincena/{planilla_id}/anular-pago")
 async def anular_pago(
@@ -788,22 +1043,16 @@ async def anular_pago(
             if pl['estado'] != 'pagada':
                 raise HTTPException(400, "Solo se puede anular una planilla pagada")
 
-            # Revertir movimientos
+            # Revertir movimientos: eliminar de cont_movimiento_tesoreria + restaurar saldos
             pagos = await conn.fetch(
                 "SELECT * FROM finanzas2.fin_planilla_quincena_pago WHERE planilla_id = $1",
                 planilla_id)
-            periodo_str = f"{pl['anio']}-{pl['mes']:02d}-Q{pl['quincena']}"
             for p in pagos:
-                await conn.execute("""
-                    INSERT INTO finanzas2.fin_movimiento_cuenta
-                        (cuenta_id, empresa_id, tipo, monto, descripcion, fecha, referencia_id, referencia_tipo)
-                    VALUES ($1, $2, 'INGRESO', $3, $4, CURRENT_DATE, $5, 'planilla_quincena_reverso')
-                """, p['cuenta_id'], empresa_id, p['monto'],
-                     f"Reversión pago planilla {periodo_str}", str(planilla_id))
-
+                await delete_movimientos_by_origen(
+                    conn, empresa_id, 'planilla_quincena_pago', p['id'])
                 await conn.execute("""
                     UPDATE finanzas2.cont_cuenta_financiera
-                       SET saldo_actual = saldo_actual + $1, updated_at = NOW()
+                       SET saldo_actual = COALESCE(saldo_actual, 0) + $1, updated_at = NOW()
                      WHERE id = $2
                 """, p['monto'], p['cuenta_id'])
 
@@ -858,25 +1107,19 @@ async def delete_planilla(
 
             periodo_str = f"{pl['anio']}-{pl['mes']:02d}-Q{pl['quincena']}"
 
-            # Si está pagada, revertir egresos primero
-            if pl['estado'] == 'pagada':
-                pagos = await conn.fetch(
-                    "SELECT * FROM finanzas2.fin_planilla_quincena_pago WHERE planilla_id = $1",
-                    planilla_id)
-                for p in pagos:
-                    # INGRESO reverso
-                    await conn.execute("""
-                        INSERT INTO finanzas2.fin_movimiento_cuenta
-                            (cuenta_id, empresa_id, tipo, monto, descripcion, fecha, referencia_id, referencia_tipo)
-                        VALUES ($1, $2, 'INGRESO', $3, $4, CURRENT_DATE, $5, 'planilla_quincena_delete')
-                    """, p['cuenta_id'], empresa_id, p['monto'],
-                         f"Reversión por eliminación de planilla {periodo_str}", str(planilla_id))
-                    # Restaurar saldo
-                    await conn.execute("""
-                        UPDATE finanzas2.cont_cuenta_financiera
-                           SET saldo_actual = saldo_actual + $1, updated_at = NOW()
-                         WHERE id = $2
-                    """, p['monto'], p['cuenta_id'])
+            # Revertir egresos de CUALQUIER pago registrado (aunque la planilla no esté en 'pagada':
+            # puede haber detalles pagados con planilla en 'aprobada' con pagos parciales).
+            pagos = await conn.fetch(
+                "SELECT * FROM finanzas2.fin_planilla_quincena_pago WHERE planilla_id = $1",
+                planilla_id)
+            for p in pagos:
+                await delete_movimientos_by_origen(
+                    conn, empresa_id, 'planilla_quincena_pago', p['id'])
+                await conn.execute("""
+                    UPDATE finanzas2.cont_cuenta_financiera
+                       SET saldo_actual = COALESCE(saldo_actual, 0) + $1, updated_at = NOW()
+                     WHERE id = $2
+                """, p['monto'], p['cuenta_id'])
 
             # Liberar adelantos vinculados (volver a pendientes)
             await conn.execute("""
@@ -893,5 +1136,340 @@ async def delete_planilla(
             return {
                 "message": "Planilla eliminada",
                 "estado_previo": pl['estado'],
-                "se_revirtieron_egresos": pl['estado'] == 'pagada',
+                "se_revirtieron_egresos": len(pagos) > 0,
+                "pagos_revertidos": len(pagos),
             }
+
+
+# ═══════════════════════════════════════════════════════════════════════
+#  PDF — Planilla consolidada imprimible
+# ═══════════════════════════════════════════════════════════════════════
+
+MESES_ES = ['Enero','Febrero','Marzo','Abril','Mayo','Junio',
+            'Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre']
+
+
+def _monto_a_letras(monto: float) -> str:
+    """Convierte S/ 1,250.76 → 'Mil doscientos cincuenta con 76/100 soles'."""
+    try:
+        from num2words import num2words
+    except ImportError:
+        return ""
+    entero = int(monto)
+    centavos = int(round((monto - entero) * 100))
+    texto = num2words(entero, lang='es').capitalize()
+    return f"{texto} con {centavos:02d}/100 soles"
+
+
+@router.get("/planillas-quincena/{planilla_id}/pdf")
+async def descargar_planilla_pdf(
+    planilla_id: int,
+    empresa_id: int = Depends(get_empresa_id),
+):
+    """Genera un PDF consolidado (apaisado) con todos los trabajadores,
+    totales, resumen por cuenta de pago y líneas para firmas.
+    Disponible en estado 'aprobada' y 'pagada'."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import mm
+    from reportlab.platypus import (
+        SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, KeepTogether,
+    )
+    from fastapi.responses import StreamingResponse
+
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        data = await _get_planilla_full(conn, planilla_id, empresa_id)
+        emp = await conn.fetchrow(
+            "SELECT id, nombre, ruc, direccion, telefono, email FROM finanzas2.cont_empresa WHERE id = $1",
+            empresa_id)
+
+    if data['estado'] not in ('aprobada', 'pagada'):
+        raise HTTPException(400,
+            f"El PDF solo está disponible cuando la planilla está aprobada o pagada (estado actual: {data['estado']})")
+
+    detalles = sorted(data['detalles'], key=lambda d: (d.get('nombre') or '').upper())
+    pagos = data['pagos']
+    mes = data['mes']
+    anio = data['anio']
+    quincena = data['quincena']
+    periodo_label = f"Quincena {quincena} · {MESES_ES[mes-1]} {anio}"
+    fechas_label = f"Del {data['fecha_inicio'].strftime('%d/%m/%Y')} al {data['fecha_fin'].strftime('%d/%m/%Y')}"
+
+    # Totales
+    def _f(v): return float(v or 0)
+    total_bruto = sum(_f(d.get('subtotal_horas')) for d in detalles)
+    total_asig = sum(_f(d.get('asig_familiar_monto')) for d in detalles)
+    total_afp = sum(_f(d.get('afp_total')) for d in detalles)
+    total_tardanzas = sum(_f(d.get('descuento_tardanzas')) for d in detalles)
+    total_adelantos = sum(_f(d.get('monto_adelantos')) for d in detalles)
+    total_neto = sum(_f(d.get('neto')) for d in detalles)
+
+    # Resumen por cuenta
+    cuentas_resumen: dict = {}
+    for p in pagos:
+        k = p.get('cuenta_nombre') or f"Cuenta #{p.get('cuenta_id')}"
+        cuentas_resumen[k] = cuentas_resumen.get(k, 0) + _f(p.get('monto'))
+
+    # Qué trabajadores ya están pagados vs pendientes (para mostrar en la tabla)
+    pagos_por_det: dict = {}
+    for p in pagos:
+        det_id = p.get('detalle_id')
+        if det_id:
+            pagos_por_det.setdefault(det_id, []).append(p)
+
+    # ─────────── Construir el PDF ───────────
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=landscape(A4),
+        leftMargin=12*mm, rightMargin=12*mm,
+        topMargin=12*mm, bottomMargin=12*mm,
+        title=f"Planilla {periodo_label}",
+    )
+    story = []
+    styles = getSampleStyleSheet()
+    H1 = ParagraphStyle('H1', parent=styles['Title'], fontSize=14,
+                        textColor=colors.HexColor('#111827'), alignment=1, spaceAfter=2)
+    Hsub = ParagraphStyle('Hsub', parent=styles['Normal'], fontSize=10,
+                          textColor=colors.HexColor('#6b7280'), alignment=1, spaceAfter=6)
+    EmpStyle = ParagraphStyle('Emp', parent=styles['Normal'], fontSize=10,
+                              textColor=colors.HexColor('#111827'), alignment=0, leading=12)
+    SmallGray = ParagraphStyle('SmG', parent=styles['Normal'], fontSize=8,
+                               textColor=colors.HexColor('#6b7280'), leading=10)
+    SectionTitle = ParagraphStyle('ST', parent=styles['Normal'], fontSize=10,
+                                  textColor=colors.HexColor('#111827'),
+                                  fontName='Helvetica-Bold', spaceBefore=6, spaceAfter=3)
+
+    # Encabezado
+    emp_nombre = (emp and emp['nombre']) or ""
+    emp_ruc = (emp and emp['ruc']) or ""
+    emp_dir = (emp and emp['direccion']) or ""
+    emp_tel = (emp and emp['telefono']) or ""
+
+    header_data = [
+        [
+            Paragraph(
+                f"<b>{emp_nombre}</b><br/>"
+                f"RUC: {emp_ruc}"
+                + (f"<br/>{emp_dir}" if emp_dir else "")
+                + (f"<br/>Tel: {emp_tel}" if emp_tel else ""),
+                EmpStyle
+            ),
+            Paragraph("<b>PLANILLA DE REMUNERACIONES</b>", H1),
+            Paragraph(
+                f"<para align='right'><b>Estado:</b> {data['estado'].upper()}<br/>"
+                f"Emitido: {date.today().strftime('%d/%m/%Y')}</para>",
+                EmpStyle,
+            ),
+        ]
+    ]
+    header_tbl = Table(header_data, colWidths=[80*mm, 110*mm, 80*mm])
+    header_tbl.setStyle(TableStyle([
+        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BOTTOMPADDING', (0,0), (-1,-1), 4),
+        ('LINEBELOW', (0,0), (-1,-1), 0.8, colors.HexColor('#d1d5db')),
+    ]))
+    story.append(header_tbl)
+    story.append(Spacer(1, 4))
+    story.append(Paragraph(f"<para align='center'><b>{periodo_label}</b> · {fechas_label}</para>", Hsub))
+    story.append(Spacer(1, 4))
+
+    # Tabla principal
+    def mfmt(v): return f"S/ {_f(v):,.2f}"
+    def nfmt(v): return f"{_f(v):g}"
+
+    # ─── Cuentas únicas usadas en pagos (para columnas dinámicas) ───
+    # Preserva el orden de aparición de la primera vez que se ve cada cuenta.
+    cuentas_orden: list = []
+    cuentas_seen: set = set()
+    for p in pagos:
+        cn = p.get('cuenta_nombre') or '—'
+        if cn not in cuentas_seen:
+            cuentas_seen.add(cn)
+            cuentas_orden.append(cn)
+
+    # Header dinámico: #, Trabajador, Sueldo, Bruto, AFP, Tard, Adel, Neto, [cuentas...], Estado
+    header_row = [
+        "N°", "TRABAJADOR", "SUELDO MES", "BRUTO", "AFP",
+        "TARD.", "ADEL.", "NETO",
+    ] + [c.upper() for c in cuentas_orden] + ["ESTADO"]
+
+    # Totales por cuenta (a calcular conforme se construyen las filas)
+    totales_por_cuenta: dict = {c: 0.0 for c in cuentas_orden}
+
+    rows_data = [header_row]
+    for i, d in enumerate(detalles, start=1):
+        pago_det = pagos_por_det.get(d['id'], [])
+        # Sumar lo pagado por cuenta para este trabajador
+        montos_por_cuenta = {c: 0.0 for c in cuentas_orden}
+        for p in pago_det:
+            cn = p.get('cuenta_nombre') or '—'
+            if cn in montos_por_cuenta:
+                montos_por_cuenta[cn] += _f(p.get('monto'))
+        for c, m in montos_por_cuenta.items():
+            totales_por_cuenta[c] += m
+
+        estado_celda = "PAGADO" if d.get('pagado_at') else "PENDIENTE"
+        cuenta_cells = [
+            (mfmt(montos_por_cuenta[c]) if montos_por_cuenta[c] > 0 else "—")
+            for c in cuentas_orden
+        ]
+        rows_data.append([
+            str(i),
+            (d.get('nombre') or '').upper(),
+            mfmt(d.get('sueldo_basico_total')),
+            mfmt(d.get('subtotal_horas')),
+            mfmt(d.get('afp_total')),
+            mfmt(d.get('descuento_tardanzas')),
+            mfmt(d.get('monto_adelantos')),
+            mfmt(d.get('neto')),
+        ] + cuenta_cells + [estado_celda])
+
+    # Fila de totales
+    cuenta_totals_cells = [mfmt(totales_por_cuenta[c]) for c in cuentas_orden]
+    rows_data.append([
+        "", "TOTALES", "", mfmt(total_bruto),
+        mfmt(total_afp), mfmt(total_tardanzas), mfmt(total_adelantos),
+        mfmt(total_neto),
+    ] + cuenta_totals_cells + [""])
+
+    # ─── Anchos de columnas ───
+    # A4 landscape, márgenes 12mm c/lado → ancho útil = 273mm
+    # Fijos: 8+50+22+24+22+16+16+24+18 = 200mm
+    # Restante = 73mm, dividido entre cuentas
+    n_cuentas = max(1, len(cuentas_orden))
+    ancho_cuentas = 73 / n_cuentas if n_cuentas > 0 else 0
+    col_widths = [
+        8*mm, 50*mm, 22*mm,     # # Trabajador Sueldo
+        24*mm, 22*mm,           # Bruto AFP
+        16*mm, 16*mm, 24*mm,    # Tard Adel Neto
+    ] + [ancho_cuentas*mm] * n_cuentas + [
+        18*mm,                  # Estado
+    ]
+
+    # Índices de columnas (estructura final):
+    # 0:#  1:Trab  2:Sueldo  3:Bruto  4:AFP  5:Tard  6:Adel  7:Neto
+    # 8..(8+n_cuentas-1): cuentas dinámicas
+    # 8+n_cuentas: Estado
+    idx_estado = 8 + n_cuentas
+
+    tbl = Table(rows_data, colWidths=col_widths, repeatRows=1)
+    tbl.setStyle(TableStyle([
+        # Header
+        ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1f2937')),
+        ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+        ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,0), (-1,0), 7.5),
+        ('ALIGN', (0,0), (-1,0), 'CENTER'),
+        ('VALIGN', (0,0), (-1,0), 'MIDDLE'),
+        ('BOTTOMPADDING', (0,0), (-1,0), 5),
+        ('TOPPADDING', (0,0), (-1,0), 5),
+        # Cuerpo
+        ('FONTSIZE', (0,1), (-1,-2), 7.5),
+        ('VALIGN', (0,1), (-1,-1), 'MIDDLE'),
+        ('ALIGN', (0,1), (0,-1), 'CENTER'),                      # #
+        ('ALIGN', (2,1), (idx_estado-1,-1), 'RIGHT'),            # montos a la derecha
+        ('ALIGN', (idx_estado,1), (idx_estado,-1), 'CENTER'),    # Estado
+        ('FONTNAME', (3,1), (3,-2), 'Helvetica-Bold'),           # Bruto negrita
+        ('FONTNAME', (7,1), (7,-2), 'Helvetica-Bold'),           # Neto negrita
+        ('TEXTCOLOR', (3,1), (3,-2), colors.HexColor('#065f46')),    # Bruto verde
+        ('TEXTCOLOR', (4,1), (6,-2), colors.HexColor('#b91c1c')),    # AFP/Tard/Adel rojo
+        ('TEXTCOLOR', (7,1), (7,-2), colors.HexColor('#065f46')),    # Neto verde
+        # Cuentas: en azul como referencia visual
+        ('TEXTCOLOR', (8,1), (idx_estado-1,-2), colors.HexColor('#1d4ed8')),
+        ('FONTNAME', (8,1), (idx_estado-1,-2), 'Helvetica-Bold'),
+        ('GRID', (0,0), (-1,-1), 0.3, colors.HexColor('#d1d5db')),
+        ('ROWBACKGROUNDS', (0,1), (-1,-2), [colors.white, colors.HexColor('#f9fafb')]),
+        # Totales
+        ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor('#e5e7eb')),
+        ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0,-1), (-1,-1), 8),
+        ('TEXTCOLOR', (3,-1), (3,-1), colors.HexColor('#065f46')),   # Bruto total verde
+        ('TEXTCOLOR', (7,-1), (7,-1), colors.HexColor('#065f46')),   # Neto total verde
+        ('TEXTCOLOR', (4,-1), (6,-1), colors.HexColor('#b91c1c')),   # AFP/Tard/Adel total rojo
+        ('TEXTCOLOR', (8,-1), (idx_estado-1,-1), colors.HexColor('#1d4ed8')),  # cuentas total azul
+    ]))
+    story.append(tbl)
+    story.append(Spacer(1, 8))
+
+    # Resumen pagado por cuenta + total en letras
+    resumen_items = []
+    resumen_items.append(Paragraph("<b>Resumen de pagos por cuenta</b>", SectionTitle))
+    if cuentas_resumen:
+        res_rows = [["Cuenta", "Monto"]]
+        total_pagado = 0.0
+        for nombre, monto in cuentas_resumen.items():
+            res_rows.append([nombre, mfmt(monto)])
+            total_pagado += monto
+        res_rows.append(["TOTAL PAGADO", mfmt(total_pagado)])
+        res_tbl = Table(res_rows, colWidths=[80*mm, 40*mm])
+        res_tbl.setStyle(TableStyle([
+            ('BACKGROUND', (0,0), (-1,0), colors.HexColor('#1f2937')),
+            ('TEXTCOLOR', (0,0), (-1,0), colors.white),
+            ('FONTNAME', (0,0), (-1,0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0,0), (-1,-1), 8),
+            ('ALIGN', (1,0), (1,-1), 'RIGHT'),
+            ('GRID', (0,0), (-1,-1), 0.3, colors.HexColor('#d1d5db')),
+            ('BACKGROUND', (0,-1), (-1,-1), colors.HexColor('#e5e7eb')),
+            ('FONTNAME', (0,-1), (-1,-1), 'Helvetica-Bold'),
+            ('TEXTCOLOR', (1,-1), (1,-1), colors.HexColor('#065f46')),
+        ]))
+        resumen_items.append(res_tbl)
+        resumen_items.append(Spacer(1, 4))
+        if total_pagado > 0:
+            resumen_items.append(Paragraph(
+                f"<i>Son: {_monto_a_letras(total_pagado)}</i>",
+                SmallGray))
+    else:
+        resumen_items.append(Paragraph(
+            "<i>Sin pagos registrados aún. La planilla está aprobada pero no pagada.</i>",
+            SmallGray))
+
+    # Bloque firmas (a la derecha del resumen)
+    firma_cell = Paragraph(
+        "<para align='center'>"
+        "_________________________<br/><b>Elaborado por</b><br/><font size=7 color='#6b7280'>Nombre · DNI · Firma</font>"
+        "</para>",
+        EmpStyle
+    )
+    firma_cell2 = Paragraph(
+        "<para align='center'>"
+        "_________________________<br/><b>Revisado por</b><br/><font size=7 color='#6b7280'>Nombre · DNI · Firma</font>"
+        "</para>",
+        EmpStyle
+    )
+    firma_cell3 = Paragraph(
+        "<para align='center'>"
+        "_________________________<br/><b>Aprobado Gerencia</b><br/><font size=7 color='#6b7280'>Nombre · DNI · Firma</font>"
+        "</para>",
+        EmpStyle
+    )
+    firmas_tbl = Table([[firma_cell, firma_cell2, firma_cell3]],
+                      colWidths=[50*mm, 50*mm, 50*mm], rowHeights=[22*mm])
+    firmas_tbl.setStyle(TableStyle([
+        ('VALIGN', (0,0), (-1,-1), 'BOTTOM'),
+    ]))
+
+    bottom_tbl = Table(
+        [[resumen_items, firmas_tbl]],
+        colWidths=[130*mm, 150*mm],
+    )
+    bottom_tbl.setStyle(TableStyle([
+        ('VALIGN', (0,0), (-1,-1), 'TOP'),
+        ('LEFTPADDING', (0,0), (-1,-1), 0),
+        ('RIGHTPADDING', (0,0), (-1,-1), 0),
+    ]))
+    story.append(KeepTogether(bottom_tbl))
+
+    doc.build(story)
+    buf.seek(0)
+    filename = f"planilla_{anio}-{mes:02d}-Q{quincena}.pdf"
+    return StreamingResponse(
+        buf,
+        media_type="application/pdf",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"'
+        },
+    )

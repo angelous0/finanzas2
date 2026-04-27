@@ -10,6 +10,10 @@ import { getReportePnLUnidad, getUnidadesInternas } from '../services/api';
 
 const fmt = (v, d = 2) => `S/ ${Number(v || 0).toLocaleString('es-PE', { minimumFractionDigits: d, maximumFractionDigits: d })}`;
 const pct = (v) => `${Number(v || 0).toFixed(2)}%`;
+// Helpers defensivos que toleran null/undefined/string sin romper render
+const num = (v) => Number(v || 0);
+const numFixed = (v, d = 4) => num(v).toFixed(d);
+const numLocale = (v) => num(v).toLocaleString('es-PE');
 
 const firstOfMonthISO = () => {
   const d = new Date();
@@ -225,13 +229,13 @@ export default function PnLUnidadInterna() {
         </div>
         <div style={s.kpiCard('#eff6ff', '#bfdbfe', '#1d4ed8')}>
           <div style={s.kpiLabel}>Prendas procesadas</div>
-          <div style={s.kpiValue}>{data.kpis.prendas_total.toLocaleString('es-PE')}</div>
+          <div style={s.kpiValue}>{numLocale(data.kpis?.prendas_total)}</div>
           <div style={{ fontSize: '0.7rem', marginTop: 2 }}>En el período</div>
         </div>
         <div style={s.kpiCard('#f5f3ff', '#ddd6fe', '#6d28d9')}>
           <div style={s.kpiLabel}>Costo real / prenda</div>
-          <div style={s.kpiValue}>S/ {data.kpis.costo_real_por_prenda.toFixed(4)}</div>
-          <div style={{ fontSize: '0.7rem', marginTop: 2 }}>Tarifa mercado: S/ {data.kpis.tarifa_mercado_promedio.toFixed(4)}</div>
+          <div style={s.kpiValue}>S/ {numFixed(data.kpis?.costo_real_por_prenda, 4)}</div>
+          <div style={{ fontSize: '0.7rem', marginTop: 2 }}>Tarifa mercado: S/ {numFixed(data.kpis?.tarifa_mercado_promedio, 4)}</div>
         </div>
       </div>
 
@@ -276,8 +280,8 @@ export default function PnLUnidadInterna() {
                     <td style={s.td}>{i.modelo}</td>
                     <td style={s.td}>{i.persona}</td>
                     <td style={s.td}>{i.servicio}</td>
-                    <td style={{ ...s.td, textAlign: 'right', fontFamily: "'JetBrains Mono', monospace" }}>{i.cantidad.toLocaleString('es-PE')}</td>
-                    <td style={{ ...s.td, textAlign: 'right', fontFamily: "'JetBrains Mono', monospace" }}>{i.tarifa.toFixed(4)}</td>
+                    <td style={{ ...s.td, textAlign: 'right', fontFamily: "'JetBrains Mono', monospace" }}>{numLocale(i.cantidad)}</td>
+                    <td style={{ ...s.td, textAlign: 'right', fontFamily: "'JetBrains Mono', monospace" }}>{numFixed(i.tarifa, 4)}</td>
                     <td style={{ ...s.td, textAlign: 'right', fontWeight: 700, fontFamily: "'JetBrains Mono', monospace", color: '#15803d' }}>{fmt(i.importe)}</td>
                     <td style={{ ...s.td, fontSize: '0.7rem', fontFamily: "'JetBrains Mono', monospace", color: '#b45309' }}>{i.factura_numero || '—'}</td>
                   </tr>
@@ -465,8 +469,8 @@ export default function PnLUnidadInterna() {
         <div style={{ padding: '1rem 1.25rem', fontSize: '0.85rem', lineHeight: 1.7 }}>
           {data.kpis.tarifa_mercado_promedio > 0 && data.kpis.costo_real_por_prenda > 0 ? (
             <>
-              El <b>costo real por prenda</b> es <b>S/ {data.kpis.costo_real_por_prenda.toFixed(4)}</b> (= gastos totales / prendas procesadas).<br />
-              El <b>precio de mercado</b> que estás pagando (tarifa) es <b>S/ {data.kpis.tarifa_mercado_promedio.toFixed(4)}</b> por prenda.<br />
+              El <b>costo real por prenda</b> es <b>S/ {numFixed(data.kpis?.costo_real_por_prenda, 4)}</b> (= gastos totales / prendas procesadas).<br />
+              El <b>precio de mercado</b> que estás pagando (tarifa) es <b>S/ {numFixed(data.kpis?.tarifa_mercado_promedio, 4)}</b> por prenda.<br />
               {data.kpis.costo_real_por_prenda <= data.kpis.tarifa_mercado_promedio ? (
                 <span style={{ color: '#15803d', fontWeight: 600 }}>
                   ✅ Producir internamente es <b>{pct((1 - data.kpis.costo_real_por_prenda / data.kpis.tarifa_mercado_promedio) * 100)}</b> más barato que tercerizar.

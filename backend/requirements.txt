@@ -61,6 +61,7 @@ motor==3.3.1
 multidict==6.7.0
 mypy==1.19.1
 mypy_extensions==1.1.0
+num2words==0.5.14
 numpy==2.4.1
 oauthlib==3.3.1
 openai==1.99.9
@@ -97,6 +98,7 @@ pytz==2025.2
 PyYAML==6.0.3
 referencing==0.37.0
 regex==2026.1.15
+reportlab==4.4.10
 requests==2.32.5
 requests-oauthlib==2.0.0
 rich==14.2.0

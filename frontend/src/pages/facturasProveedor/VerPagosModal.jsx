@@ -79,28 +79,47 @@ const VerPagosModal = ({ show, factura, onClose, onDataChanged }) => {
             <table className="data-table" style={{ fontSize: '0.875rem' }}>
               <thead>
                 <tr>
-                  <th>Fecha</th><th>N. Pago</th><th>Cuenta</th><th>Medio</th>
+                  <th>Fecha</th><th>N. Pago</th><th>Origen</th><th>Cuenta</th>
                   <th className="text-right">Monto</th><th>Referencia</th><th className="text-center">Acciones</th>
                 </tr>
               </thead>
               <tbody>
-                {pagos.map((pago) => (
-                  <tr key={pago.id}>
-                    <td>{formatDate(pago.fecha)}</td>
-                    <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 500 }}>{pago.numero}</td>
-                    <td>{pago.cuenta_nombre}</td>
-                    <td style={{ textTransform: 'capitalize' }}>{pago.medio_pago || '-'}</td>
-                    <td className="text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: '#22C55E', fontWeight: 500 }}>
-                      {formatCurrency(pago.monto_aplicado, pago.moneda_simbolo)}
-                    </td>
-                    <td>{pago.referencia || '-'}</td>
-                    <td className="text-center">
-                      <button className="btn btn-outline btn-sm btn-icon btn-danger" onClick={() => handleAnular(pago.id)} title="Anular pago" data-testid={`anular-pago-${pago.id}`}>
-                        <Undo2 size={14} />
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {pagos.map((pago) => {
+                  const esLetra = pago.origen === 'letra';
+                  return (
+                    <tr key={`${pago.origen}-${pago.id}`}>
+                      <td>{formatDate(pago.fecha)}</td>
+                      <td style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 500 }}>{pago.numero}</td>
+                      <td>
+                        {esLetra ? (
+                          <span style={{ background: '#fef3c7', color: '#92400e', padding: '2px 8px', borderRadius: '6px', fontSize: '0.7rem', fontWeight: 600 }}>
+                            Letra · {pago.letra_numero?.replace(/^L-/, '') || ''}
+                          </span>
+                        ) : (
+                          <span style={{ background: '#dbeafe', color: '#1e40af', padding: '2px 8px', borderRadius: '6px', fontSize: '0.7rem', fontWeight: 600 }}>
+                            Factura
+                          </span>
+                        )}
+                      </td>
+                      <td>{pago.cuenta_nombre}</td>
+                      <td className="text-right" style={{ fontFamily: "'JetBrains Mono', monospace", color: '#22C55E', fontWeight: 500 }}>
+                        {formatCurrency(pago.monto_aplicado, pago.moneda_simbolo)}
+                      </td>
+                      <td>{pago.referencia || '-'}</td>
+                      <td className="text-center">
+                        {esLetra ? (
+                          <span style={{ fontSize: '0.7rem', color: 'var(--muted)' }} title="Anula desde Letras">
+                            —
+                          </span>
+                        ) : (
+                          <button className="btn btn-outline btn-sm btn-icon btn-danger" onClick={() => handleAnular(pago.id)} title="Anular pago" data-testid={`anular-pago-${pago.id}`}>
+                            <Undo2 size={14} />
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
               <tfoot>
                 <tr style={{ background: 'var(--card-bg-hover)', fontWeight: 600 }}>

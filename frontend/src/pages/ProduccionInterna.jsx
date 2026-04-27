@@ -1,41 +1,33 @@
 import React, { useState, useEffect } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
-  LayoutDashboard, Factory, ArrowRightLeft, Wallet,
-  FileText, BarChart3,
+  LayoutDashboard, Factory, Wallet, Boxes,
 } from 'lucide-react';
 
 // Reutilizamos las páginas existentes como componentes internos
 import CuentasInternas from './CuentasInternas';
 import UnidadesInternas from './UnidadesInternas';
-import CargosInternos from './CargosInternos';
+import MovimientosProduccionFinanzas from './MovimientosProduccionFinanzas';
 import GastosUnidadInterna from './GastosUnidadInterna';
-import MovimientosProduccion from './MovimientosProduccion';
-import ReporteUnidadesInternas from './ReporteUnidadesInternas';
 
 const TABS = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, component: CuentasInternas,
     desc: 'Saldos por unidad, CxC virtual y potencial' },
   { id: 'unidades', label: 'Unidades', icon: Factory, component: UnidadesInternas,
     desc: 'Catálogo de unidades y personas de producción' },
-  { id: 'cargos', label: 'Cargos Internos', icon: ArrowRightLeft, component: CargosInternos,
-    desc: 'Ingresos por servicios internos' },
+  { id: 'movimientos', label: 'Movimientos', icon: Boxes, component: MovimientosProduccionFinanzas,
+    desc: 'Movimientos de producción con estado financiero (externos + internos)' },
   { id: 'gastos', label: 'Gastos', icon: Wallet, component: GastosUnidadInterna,
-    desc: 'Gastos por unidad (planilla, destajo)' },
-  { id: 'movimientos', label: 'Movimientos', icon: FileText, component: MovimientosProduccion,
-    desc: 'Movimientos físicos desde producción' },
-  { id: 'reporte', label: 'Reporte Gerencial', icon: BarChart3, component: ReporteUnidadesInternas,
-    desc: 'Resumen agregado de todas las unidades' },
+    desc: 'Gastos por unidad (planilla, facturas, adelantos)' },
 ];
 
 // Mapeo de rutas legacy → id de tab, para mantener retrocompatibilidad
 const LEGACY_ROUTE_TO_TAB = {
   '/cuentas-internas': 'dashboard',
   '/unidades-internas': 'unidades',
-  '/cargos-internos': 'cargos',
+  '/cargos-internos': 'movimientos',  // el tab viejo ahora redirige al nuevo
   '/gastos-unidad-interna': 'gastos',
-  '/movimientos-produccion': 'movimientos',
-  '/reporte-unidades-internas': 'reporte',
+  '/reporte-unidades-internas': 'dashboard',  // reporte eliminado → al dashboard
 };
 
 function resolveTab(pathname) {

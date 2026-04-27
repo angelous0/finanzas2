@@ -43,6 +43,7 @@ from routers.afp import router as afp_router
 from routers.trabajadores import router as trabajadores_router
 from routers.adelantos import router as adelantos_router
 from routers.planilla_quincena import router as planilla_quincena_router
+from routers.planilla_destajo import router as planilla_destajo_router
 
 # LEGACY routers — desregistrados en Fase 2 (archivos conservados para /legacy/ futuro):
 # from routers.planillas import router as planillas_router
@@ -106,6 +107,7 @@ api_router.include_router(afp_router)
 api_router.include_router(trabajadores_router)
 api_router.include_router(adelantos_router)
 api_router.include_router(planilla_quincena_router)
+api_router.include_router(planilla_destajo_router)
 api_router.include_router(activos_fijos_router)
 api_router.include_router(movimientos_produccion_router)
 

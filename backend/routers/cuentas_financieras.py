@@ -119,30 +119,58 @@ async def get_kardex_cuenta(
         is_ficticia = cuenta.get('es_ficticia', False)
 
         if is_ficticia:
-            # Fictitious accounts use fin_movimiento_cuenta
-            conditions = ["mc.cuenta_id = $1", "mc.empresa_id = $2"]
+            # Cuentas ficticias: consolidamos dos fuentes
+            #   1) fin_movimiento_cuenta — legacy (gastos-unidad-interna, cargos)
+            #   2) cont_movimiento_tesoreria — actual (planilla, adelantos, gastos, pagos)
+            # Esto asegura que al pagar un trabajador de unidad interna desde la cuenta
+            # ficticia, el kardex refleje el movimiento.
             params = [id, empresa_id]
             idx = 3
+            date_filter_mc = ""
+            date_filter_mt = ""
             if fecha_desde:
-                conditions.append(f"mc.fecha >= ${idx}"); params.append(fecha_desde); idx += 1
+                date_filter_mc += f" AND mc.fecha >= ${idx}"
+                date_filter_mt += f" AND mt.fecha >= ${idx}"
+                params.append(fecha_desde); idx += 1
             if fecha_hasta:
-                conditions.append(f"mc.fecha <= ${idx}"); params.append(fecha_hasta); idx += 1
+                date_filter_mc += f" AND mc.fecha <= ${idx}"
+                date_filter_mt += f" AND mt.fecha <= ${idx}"
+                params.append(fecha_hasta); idx += 1
             rows = await conn.fetch(f"""
-                SELECT mc.id, mc.tipo, mc.fecha, mc.monto, mc.descripcion,
-                       mc.referencia_id, mc.referencia_tipo
-                FROM finanzas2.fin_movimiento_cuenta mc
-                WHERE {' AND '.join(conditions)}
-                ORDER BY mc.fecha ASC, mc.id ASC
+                SELECT fecha, tipo, monto, descripcion, referencia_tipo, referencia_id, source_id
+                  FROM (
+                    SELECT mc.fecha, mc.tipo, mc.monto, mc.descripcion,
+                           mc.referencia_tipo, mc.referencia_id, mc.id AS source_id
+                      FROM finanzas2.fin_movimiento_cuenta mc
+                     WHERE mc.cuenta_id = $1 AND mc.empresa_id = $2 {date_filter_mc}
+                    UNION ALL
+                    SELECT mt.fecha,
+                           CASE WHEN LOWER(mt.tipo)='ingreso' THEN 'INGRESO' ELSE 'EGRESO' END AS tipo,
+                           mt.monto, mt.concepto AS descripcion,
+                           mt.origen_tipo AS referencia_tipo,
+                           CAST(mt.origen_id AS VARCHAR) AS referencia_id,
+                           mt.id AS source_id
+                      FROM finanzas2.cont_movimiento_tesoreria mt
+                     WHERE mt.cuenta_financiera_id = $1 AND mt.empresa_id = $2 {date_filter_mt}
+                  ) u
+                 ORDER BY fecha ASC, source_id ASC
             """, *params)
             saldo_base = float(cuenta.get('saldo_inicial') or 0)
             if fecha_desde:
-                pre = await conn.fetchrow("""
-                    SELECT COALESCE(SUM(CASE WHEN tipo='INGRESO' THEN monto ELSE 0 END), 0) as ing,
-                           COALESCE(SUM(CASE WHEN tipo='EGRESO' THEN monto ELSE 0 END), 0) as egr
-                    FROM finanzas2.fin_movimiento_cuenta
-                    WHERE cuenta_id=$1 AND empresa_id=$2 AND fecha < $3
+                pre_row = await conn.fetchrow("""
+                    SELECT COALESCE(SUM(ing), 0) AS ing, COALESCE(SUM(egr), 0) AS egr FROM (
+                      SELECT CASE WHEN tipo='INGRESO' THEN monto ELSE 0 END AS ing,
+                             CASE WHEN tipo='EGRESO'  THEN monto ELSE 0 END AS egr
+                        FROM finanzas2.fin_movimiento_cuenta
+                       WHERE cuenta_id=$1 AND empresa_id=$2 AND fecha < $3
+                      UNION ALL
+                      SELECT CASE WHEN LOWER(tipo)='ingreso' THEN monto ELSE 0 END AS ing,
+                             CASE WHEN LOWER(tipo)='egreso'  THEN monto ELSE 0 END AS egr
+                        FROM finanzas2.cont_movimiento_tesoreria
+                       WHERE cuenta_financiera_id=$1 AND empresa_id=$2 AND fecha < $3
+                    ) u
                 """, id, empresa_id, fecha_desde)
-                saldo_base += float(pre['ing']) - float(pre['egr'])
+                saldo_base += float(pre_row['ing']) - float(pre_row['egr'])
             movimientos = []
             saldo = saldo_base
             for r in rows:

@@ -414,6 +414,22 @@ async def list_facturas_proveedor(
                 'total_vinculado': total_vinculado,
                 'estado': 'completo' if has_art_lines and total_art_cant > 0 and total_vinculado >= total_art_cant else ('parcial' if total_vinculado > 0 else ('pendiente' if has_art_lines else 'na'))
             }
+            # Resumen de letras: cuánto se ha pagado de las letras y cuánto está pendiente
+            letras_agg = await conn.fetchrow("""
+                SELECT
+                    COALESCE(SUM(monto), 0)::numeric AS total,
+                    COALESCE(SUM(monto - COALESCE(saldo_pendiente, monto)), 0)::numeric AS pagado,
+                    COALESCE(SUM(saldo_pendiente), 0)::numeric AS pendiente,
+                    COUNT(*) AS cantidad
+                  FROM finanzas2.cont_letra
+                 WHERE factura_id = $1
+            """, row['id'])
+            fp_dict['letras_resumen'] = {
+                'total': float(letras_agg['total'] or 0),
+                'pagado': float(letras_agg['pagado'] or 0),
+                'pendiente': float(letras_agg['pendiente'] or 0),
+                'cantidad': int(letras_agg['cantidad'] or 0),
+            }
             result.append(fp_dict)
         return result
 
@@ -716,6 +732,74 @@ async def update_factura_proveedor(id: int, data: FacturaProveedorUpdate, empres
                             ch['importe_viejo'], ch['importe_nuevo'], diff_importe,
                             empresa_id)
 
+        # ─── Recalcular totales de cabecera desde las líneas ───
+        # Se ejecuta SIEMPRE al final del update (aunque no haya cambios en líneas),
+        # porque el frontend manda base_gravada/igv_sunat pero NO total/subtotal,
+        # y en facturas con líneas con impuestos_incluidos hay que recalcular.
+        f_actual = await conn.fetchrow(
+            "SELECT impuestos_incluidos FROM finanzas2.cont_factura_proveedor WHERE id = $1",
+            id
+        )
+        impuestos_incluidos = f_actual['impuestos_incluidos'] if f_actual else True
+        # total_pagado = suma de aplicaciones de pago a esta factura
+        total_pagado = float(await conn.fetchval(
+            """SELECT COALESCE(SUM(pa.monto_aplicado), 0)
+                 FROM finanzas2.cont_pago_aplicacion pa
+                WHERE pa.tipo_documento = 'factura' AND pa.documento_id = $1""",
+            id
+        ) or 0)
+
+        agg = await conn.fetchrow("""
+            SELECT
+                COALESCE(SUM(CASE WHEN igv_aplica THEN importe ELSE 0 END), 0)::numeric AS imp_grav,
+                COALESCE(SUM(CASE WHEN NOT igv_aplica THEN importe ELSE 0 END), 0)::numeric AS imp_no_grav
+              FROM finanzas2.cont_factura_proveedor_linea
+             WHERE factura_id = $1
+        """, id)
+        imp_grav = float(agg['imp_grav'] or 0)
+        imp_no_grav = float(agg['imp_no_grav'] or 0)
+
+        if impuestos_incluidos:
+            base_grav = round(imp_grav / 1.18, 2)
+            igv_calc = round(imp_grav - base_grav, 2)
+        else:
+            base_grav = round(imp_grav, 2)
+            igv_calc = round(imp_grav * 0.18, 2)
+
+        subtotal_calc = round(base_grav + imp_no_grav, 2)
+        total_calc = round(subtotal_calc + igv_calc, 2)
+        saldo_calc = round(total_calc - total_pagado, 2)
+
+        # Determinar nuevo estado según pagos
+        if total_pagado <= 0:
+            nuevo_estado = 'pendiente' if total_calc > 0 else (factura['estado'] or 'pendiente')
+        elif total_pagado < total_calc - 0.01:
+            nuevo_estado = 'parcial'
+        else:
+            nuevo_estado = 'pagado'
+
+        # No pisar estado 'canjeado' ni 'anulada'
+        estado_actual = factura['estado']
+        if estado_actual in ('canjeado', 'anulada'):
+            nuevo_estado = estado_actual
+
+        await conn.execute("""
+            UPDATE finanzas2.cont_factura_proveedor
+               SET subtotal = $1, igv = $2, total = $3,
+                   base_gravada = $4, igv_sunat = $5, base_no_gravada = $6,
+                   saldo_pendiente = $7, estado = $8, updated_at = NOW()
+             WHERE id = $9
+        """, subtotal_calc, igv_calc, total_calc,
+            base_grav, igv_calc, round(imp_no_grav, 2),
+            saldo_calc, nuevo_estado, id)
+
+        # Sincronizar CxP
+        await conn.execute("""
+            UPDATE finanzas2.cont_cxp
+               SET monto_original = $1, saldo_pendiente = $2, updated_at = NOW()
+             WHERE factura_id = $3
+        """, total_calc, saldo_calc, id)
+
         return await get_factura_proveedor(id, empresa_id)
 
 
@@ -980,10 +1064,12 @@ async def anular_procesamiento_nota_interna(id: int, empresa_id: int = Depends(g
 
 @router.get("/facturas-proveedor/{id}/pagos")
 async def get_pagos_de_factura(id: int, empresa_id: int = Depends(get_empresa_id)):
+    """Devuelve historial unificado de pagos: directos + pagos a letras canjeadas."""
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("SET search_path TO finanzas2, public")
         rows = await conn.fetch("""
+            -- Pagos directos a la factura
             SELECT COALESCE(mt.id, p.id) as id,
                    COALESCE(mt.numero, p.numero) as numero,
                    COALESCE(mt.tipo, p.tipo::text) as tipo,
@@ -994,7 +1080,9 @@ async def get_pagos_de_factura(id: int, empresa_id: int = Depends(get_empresa_id
                    COALESCE(mon_mt.codigo, mon_p.codigo) as moneda_codigo,
                    COALESCE(mon_mt.simbolo, mon_p.simbolo) as moneda_simbolo,
                    COALESCE(mt.referencia, p.referencia) as referencia,
-                   COALESCE(mt.conciliado, false) as conciliado
+                   COALESCE(mt.conciliado, false) as conciliado,
+                   'factura' as origen,
+                   NULL::text as letra_numero
             FROM finanzas2.cont_pago_aplicacion pa
             LEFT JOIN finanzas2.cont_movimiento_tesoreria mt ON pa.movimiento_tesoreria_id = mt.id
             LEFT JOIN finanzas2.cont_pago p ON pa.pago_id = p.id
@@ -1003,7 +1091,35 @@ async def get_pagos_de_factura(id: int, empresa_id: int = Depends(get_empresa_id
             LEFT JOIN finanzas2.cont_moneda mon_mt ON mt.moneda_id = mon_mt.id
             LEFT JOIN finanzas2.cont_moneda mon_p ON p.moneda_id = mon_p.id
             WHERE pa.tipo_documento = 'factura' AND pa.documento_id = $1
-            ORDER BY COALESCE(mt.fecha, p.fecha) DESC
+
+            UNION ALL
+
+            -- Pagos hechos a letras de esta factura (cuando está canjeada)
+            SELECT COALESCE(mt.id, p.id, pa.id) as id,
+                   COALESCE(mt.numero, p.numero, 'L-' || l.numero) as numero,
+                   COALESCE(mt.tipo, p.tipo::text, 'egreso') as tipo,
+                   COALESCE(mt.fecha, p.fecha, l.updated_at::date) as fecha,
+                   COALESCE(mt.monto, p.monto_total, pa.monto_aplicado) as monto_total,
+                   pa.monto_aplicado,
+                   COALESCE(cf_mt.nombre, cf_p.nombre, '—') as cuenta_nombre,
+                   COALESCE(mon_mt.codigo, mon_p.codigo, 'PEN') as moneda_codigo,
+                   COALESCE(mon_mt.simbolo, mon_p.simbolo, 'S/') as moneda_simbolo,
+                   COALESCE(mt.referencia, p.referencia, l.numero) as referencia,
+                   COALESCE(mt.conciliado, false) as conciliado,
+                   'letra' as origen,
+                   l.numero as letra_numero
+            FROM finanzas2.cont_letra l
+            JOIN finanzas2.cont_pago_aplicacion pa
+              ON pa.tipo_documento = 'letra' AND pa.documento_id = l.id
+            LEFT JOIN finanzas2.cont_movimiento_tesoreria mt ON pa.movimiento_tesoreria_id = mt.id
+            LEFT JOIN finanzas2.cont_pago p ON pa.pago_id = p.id
+            LEFT JOIN finanzas2.cont_cuenta_financiera cf_mt ON mt.cuenta_financiera_id = cf_mt.id
+            LEFT JOIN finanzas2.cont_cuenta_financiera cf_p ON p.cuenta_financiera_id = cf_p.id
+            LEFT JOIN finanzas2.cont_moneda mon_mt ON mt.moneda_id = mon_mt.id
+            LEFT JOIN finanzas2.cont_moneda mon_p ON p.moneda_id = mon_p.id
+            WHERE l.factura_id = $1
+
+            ORDER BY fecha DESC NULLS LAST
         """, id)
         return [dict(r) for r in rows]
 

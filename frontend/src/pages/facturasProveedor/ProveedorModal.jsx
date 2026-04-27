@@ -4,14 +4,17 @@ import { toast } from 'sonner';
 
 const ProveedorModal = ({ show, onClose, onCreated }) => {
   const [nombre, setNombre] = useState('');
+  const [saving, setSaving] = useState(false);
 
   if (!show) return null;
 
   const handleSave = async () => {
+    if (saving) return;
     if (!nombre.trim()) {
       toast.error('Ingrese el nombre del proveedor');
       return;
     }
+    setSaving(true);
     try {
       const response = await createTercero({
         nombre: nombre.trim(),
@@ -26,6 +29,8 @@ const ProveedorModal = ({ show, onClose, onCreated }) => {
     } catch (error) {
       console.error('Error creating proveedor:', error);
       toast.error('Error al crear proveedor');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -46,9 +51,9 @@ const ProveedorModal = ({ show, onClose, onCreated }) => {
           />
         </div>
         <div style={{ display: 'flex', gap: '0.75rem', justifyContent: 'flex-end' }}>
-          <button type="button" className="btn btn-outline" onClick={onClose}>Cancelar</button>
-          <button type="button" className="btn btn-primary" onClick={handleSave} data-testid="guardar-proveedor-btn">
-            Crear proveedor
+          <button type="button" className="btn btn-outline" onClick={onClose} disabled={saving}>Cancelar</button>
+          <button type="button" className="btn btn-primary" onClick={handleSave} disabled={saving} data-testid="guardar-proveedor-btn">
+            {saving ? 'Creando...' : 'Crear proveedor'}
           </button>
         </div>
       </div>

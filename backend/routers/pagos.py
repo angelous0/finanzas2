@@ -493,7 +493,13 @@ async def generar_letras(data: GenerarLetrasRequest, empresa_id: int = Depends(g
     async with pool.acquire() as conn:
         await conn.execute("SET search_path TO finanzas2, public")
         async with conn.transaction():
-            factura = await conn.fetchrow("SELECT * FROM finanzas2.cont_factura_proveedor WHERE id = $1", data.factura_id)
+            # FOR UPDATE bloquea la fila hasta el commit. Si llega un segundo
+            # request en paralelo (doble click), espera a que termine el primero
+            # y al ejecutar este SELECT verá estado='canjeado' y fallará abajo.
+            factura = await conn.fetchrow(
+                "SELECT * FROM finanzas2.cont_factura_proveedor WHERE id = $1 FOR UPDATE",
+                data.factura_id,
+            )
             if not factura:
                 raise HTTPException(404, "Factura not found")
             if factura['estado'] in ('pagado', 'anulada', 'canjeado'):

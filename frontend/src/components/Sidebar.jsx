@@ -8,7 +8,8 @@ import {
   Tag, Package, FileSpreadsheet,
   Vault, Layers, Link2, History, BookOpen, PieChart,
   Factory, ArrowRightLeft, FileText, BarChart3, ClipboardList,
-  TrendingUp, Menu, ChevronsLeft, ChevronsRight, Settings
+  TrendingUp, Menu, ChevronsLeft, ChevronsRight, Settings,
+  Scissors
 } from 'lucide-react';
 import { useEmpresa } from '../context/EmpresaContext';
 
@@ -80,6 +81,7 @@ const navSections = [
     items: [
       { icon: Users, label: 'Trabajadores', path: '/trabajadores' },
       { icon: FileSpreadsheet, label: 'Planillas Quincena', path: '/planillas-quincena' },
+      { icon: Scissors, label: 'Planillas Destajo', path: '/planillas-destajo' },
       { icon: Clock, label: 'Adelantos', path: '/adelantos' },
       { icon: Settings, label: 'Ajustes Planilla', path: '/ajustes-planilla' },
     ]

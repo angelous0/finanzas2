@@ -130,6 +130,7 @@ export const desvincularIngreso = (vinculacionId) => api.delete(`/facturas-prove
 export const getGastos = (params) => api.get('/gastos', { params });
 export const getGasto = (id) => api.get(`/gastos/${id}`);
 export const createGasto = (data) => api.post('/gastos', data);
+export const getNextOtroCorrelativo = (fecha) => api.get('/gastos/next-otro-correlativo', { params: { fecha } });
 export const updateGasto = (id, data) => api.put(`/gastos/${id}`, data);
 export const deleteGasto = (id) => api.delete(`/gastos/${id}`);
 export const deleteGastoPago = (gastoId, pagoId) => api.delete(`/gastos/${gastoId}/pagos/${pagoId}`);
@@ -298,14 +299,14 @@ export const updateUnidadInterna = (id, data) => api.put(`/unidades-internas/${i
 export const deleteUnidadInterna = (id) => api.delete(`/unidades-internas/${id}`);
 export const getPersonasProduccion = () => api.get('/personas-produccion');
 export const updatePersonaTipo = (id, data) => api.put(`/personas-produccion/${id}/tipo`, data);
-export const getCargosInternos = (params) => api.get('/cargos-internos', { params });
+// Cargos internos: solo el endpoint "generar" sigue activo (desde la tab Movimientos).
+// El listado detallado se consume vía getMovimientosProduccionFinanzas.
 export const generarCargosInternos = () => api.post('/cargos-internos/generar');
 export const getGastosUnidadInterna = (params) => api.get('/gastos-unidad-interna', { params });
 export const createGastoUnidadInterna = (data) => api.post('/gastos-unidad-interna', data);
 export const updateGastoUnidadInterna = (id, data) => api.put(`/gastos-unidad-interna/${id}`, data);
 export const deleteGastoUnidadInterna = (id) => api.delete(`/gastos-unidad-interna/${id}`);
 export const getTiposGastoUnidad = () => api.get('/tipos-gasto-unidad');
-export const getReporteUnidadesInternas = (params) => api.get('/reporte-unidades-internas', { params });
 
 // ─── Planilla v3 ─────────────────────────────────────────────
 // Ajustes
@@ -329,6 +330,14 @@ export const previewCalculosTrabajador = (data) => api.post('/trabajadores/calcu
 export const getMediosPagoTrabajador = (id) => api.get(`/trabajadores/${id}/medios-pago`);
 export const setMediosPagoTrabajador = (id, medios) => api.put(`/trabajadores/${id}/medios-pago`, medios);
 
+// Tarifas destajo por trabajador × servicio
+export const getTarifasDestajoTrabajador = (id) => api.get(`/trabajadores/${id}/tarifas-destajo`);
+export const setTarifasDestajoTrabajador = (id, tarifas) => api.put(`/trabajadores/${id}/tarifas-destajo`, tarifas);
+
+// Catálogo: personas de Producción (para linkear con un trabajador)
+export const getPersonasProduccionDisponibles = (params) =>
+  api.get('/personas-produccion-disponibles', { params });
+
 // Adelantos a trabajadores
 export const getAdelantos = (params) => api.get('/adelantos-trabajador', { params });
 export const createAdelanto = (data) => api.post('/adelantos-trabajador', data);
@@ -346,6 +355,31 @@ export const aprobarPlanillaQuincena = (id) => api.post(`/planillas-quincena/${i
 export const pagarPlanillaQuincena = (id, data) => api.post(`/planillas-quincena/${id}/pagar`, data);
 export const anularPagoPlanillaQuincena = (id) => api.post(`/planillas-quincena/${id}/anular-pago`);
 export const deletePlanillaQuincena = (id) => api.delete(`/planillas-quincena/${id}`);
+// Pago por trabajador individual (desde tabla paso 2)
+export const pagarDetallePlanilla = (planillaId, detalleId, data) =>
+  api.post(`/planillas-quincena/${planillaId}/detalles/${detalleId}/pagar`, data);
+export const anularPagoDetalle = (planillaId, detalleId) =>
+  api.post(`/planillas-quincena/${planillaId}/detalles/${detalleId}/anular-pago`);
+
+// ─── Planilla Destajo ─────────────────────────────────────────
+export const getPlanillasDestajo = (params) => api.get('/planillas-destajo', { params });
+export const getPlanillaDestajo = (id) => api.get(`/planillas-destajo/${id}`);
+export const calcularPreviewPlanillaDestajo = (data) => api.post('/planillas-destajo/calcular', data);
+export const createPlanillaDestajo = (data) => api.post('/planillas-destajo', data);
+export const updatePlanillaDestajo = (id, data) => api.put(`/planillas-destajo/${id}`, data);
+export const aprobarPlanillaDestajo = (id) => api.post(`/planillas-destajo/${id}/aprobar`);
+export const deletePlanillaDestajo = (id) => api.delete(`/planillas-destajo/${id}`);
+export const pagarDetalleDestajo = (planillaId, detalleId, data) =>
+  api.post(`/planillas-destajo/${planillaId}/detalles/${detalleId}/pagar`, data);
+export const anularPagoDetalleDestajo = (planillaId, detalleId) =>
+  api.post(`/planillas-destajo/${planillaId}/detalles/${detalleId}/anular-pago`);
+
+// URL absoluta al PDF consolidado (para abrir en nueva pestaña)
+export const planillaPdfUrl = (planillaId) => {
+  const empresaId = localStorage.getItem('empresaActualId');
+  const qs = empresaId ? `?empresa_id=${encodeURIComponent(empresaId)}` : '';
+  return `${API}/planillas-quincena/${planillaId}/pdf${qs}`;
+};
 
 // Activos Fijos
 export const getActivosFijos = (params) => api.get('/activos-fijos', { params });
@@ -357,12 +391,16 @@ export const getResumenActivos = () => api.get('/activos-fijos/resumen');
 export const getDepreciacionActivo = (id) => api.get(`/activos-fijos/${id}/depreciacion`);
 export const calcularDepreciacion = () => api.post('/activos-fijos/calcular-depreciacion');
 
-// Movimientos desde Producción
-export const getMovimientosProduccion = (params) => api.get('/movimientos-produccion', { params });
-export const getMovimientosProduccionFinanzas = (params) => api.get('/movimientos-produccion-finanzas', { params });
+// Movimientos de Producción (vista financiera enriquecida)
+// Consumido por la pestaña "Movimientos" del módulo Producción Interna.
+export const getMovimientosProduccionFinanzas = (params) =>
+  api.get('/movimientos-produccion-finanzas', { params });
 
-// Producción backend directo — vincular facturas con movimientos
+// Producción backend directo — vincular facturas con movimientos sin factura.
+// Lo consume FacturaFormModal para asociar cortes físicos a una factura nueva.
 const PROD_API_URL = process.env.REACT_APP_PRODUCCION_URL || 'http://localhost:8000';
+
+export const PRODUCCION_APP_URL = process.env.REACT_APP_PRODUCCION_APP_URL || 'http://localhost:3000';
 
 export const getMovimientosProduccionSinFactura = (params) =>
   axios.get(`${PROD_API_URL}/api/movimientos-produccion-sin-factura`, { params });

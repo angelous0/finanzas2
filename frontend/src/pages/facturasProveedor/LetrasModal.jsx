@@ -13,6 +13,7 @@ const LetrasModal = ({ show, factura, cuentasFinancieras, onClose, onLetrasCread
     banco_id: ''
   });
   const [letrasPreview, setLetrasPreview] = useState([]);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (factura && show) {
@@ -64,12 +65,14 @@ const LetrasModal = ({ show, factura, cuentasFinancieras, onClose, onLetrasCread
   };
 
   const handleCrear = async () => {
+    if (saving) return;  // Anti-doble-click
     const totalLetras = letrasPreview.reduce((sum, l) => sum + l.monto, 0);
     const totalFactura = parseFloat(factura.total) || 0;
     if (Math.abs(totalLetras - totalFactura) > 0.01) {
       toast.error(`El total de las letras (${formatCurrency(totalLetras)}) debe ser igual al total de la factura (${formatCurrency(totalFactura)})`);
       return;
     }
+    setSaving(true);
     try {
       await generarLetras({
         factura_id: factura.id,
@@ -85,6 +88,8 @@ const LetrasModal = ({ show, factura, cuentasFinancieras, onClose, onLetrasCread
     } catch (error) {
       console.error('Error creando letras:', error);
       toast.error(typeof error.response?.data?.detail === 'string' ? error.response?.data?.detail : 'Error al crear letras');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -189,10 +194,10 @@ const LetrasModal = ({ show, factura, cuentasFinancieras, onClose, onLetrasCread
           </div>
         </div>
         <div className="modal-footer">
-          <button type="button" className="btn btn-outline" onClick={onClose}>Cancelar</button>
-          <button type="button" className="btn btn-primary" onClick={handleCrear} data-testid="crear-letras-btn">
+          <button type="button" className="btn btn-outline" onClick={onClose} disabled={saving}>Cancelar</button>
+          <button type="button" className="btn btn-primary" onClick={handleCrear} disabled={saving} data-testid="crear-letras-btn">
             <FileSpreadsheet size={16} />
-            Crear {letrasPreview.length} Letras
+            {saving ? 'Creando...' : `Crear ${letrasPreview.length} Letras`}
           </button>
         </div>
       </div>

@@ -1313,11 +1313,21 @@ input[type="number"] {
   border-radius: 12px;
   box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
   width: 95%;
-  max-width: 950px;
-  max-height: 90vh;
+  max-width: 1180px;
+  max-height: 92vh;
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+/* Disable scroll-wheel changes on number inputs (UX: scroll the form, not the value) */
+.factura-modal input[type="number"]::-webkit-outer-spin-button,
+.factura-modal input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.factura-modal input[type="number"] {
+  -moz-appearance: textfield;
 }
 
 .factura-modal > form {

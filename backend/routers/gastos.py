@@ -16,9 +16,46 @@ async def generate_gasto_number(conn, empresa_id: int) -> str:
     return await get_next_correlativo(conn, empresa_id, 'gasto', prefijo)
 
 
+async def _next_otro_correlativo(conn, empresa_id: int, fecha_obj) -> str:
+    """Próximo número de documento para tipo_documento='otro'.
+
+    Formato: MM-YYYY-NNNN (correlativo mensual; se reinicia cada mes).
+    Acepta fecha como date o como string ISO 'YYYY-MM-DD'.
+    """
+    if isinstance(fecha_obj, str):
+        fecha_obj = datetime.strptime(fecha_obj[:10], "%Y-%m-%d").date()
+    prefix = fecha_obj.strftime("%m-%Y")
+    pattern = f"{prefix}-%"
+    last = await conn.fetchval(
+        """
+        SELECT MAX(NULLIF(SUBSTRING(numero_documento FROM '(\\d+)$'), '')::int)
+          FROM finanzas2.cont_gasto
+         WHERE empresa_id = $1
+           AND tipo_documento = 'otro'
+           AND numero_documento LIKE $2
+        """,
+        empresa_id, pattern,
+    )
+    next_num = (last or 0) + 1
+    return f"{prefix}-{next_num:04d}"
+
+
 # =====================
 # GASTOS
 # =====================
+@router.get("/gastos/next-otro-correlativo")
+async def next_otro_correlativo(fecha: date, empresa_id: int = Depends(get_empresa_id)):
+    """Devuelve el próximo correlativo para documentos tipo 'Otro' del mes.
+
+    Formato: MM-YYYY-NNNN (ej: 04-2026-0001). Se reinicia cada mes.
+    """
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SET search_path TO finanzas2, public")
+        return {"numero_documento": await _next_otro_correlativo(conn, empresa_id, fecha)}
+
+
+
 @router.get("/gastos", response_model=List[Gasto])
 async def list_gastos(
     categoria_id: Optional[int] = None,
@@ -84,11 +121,13 @@ async def list_gastos(
             gasto_dict = dict(row)
             lineas = await conn.fetch("""
                 SELECT gl.*, c.nombre as categoria_nombre,
-                       ln.nombre as linea_negocio_nombre, cc.nombre as centro_costo_nombre
+                       ln.nombre as linea_negocio_nombre, cc.nombre as centro_costo_nombre,
+                       ui.nombre as unidad_interna_nombre
                 FROM finanzas2.cont_gasto_linea gl
                 LEFT JOIN finanzas2.cont_categoria c ON gl.categoria_id = c.id
                 LEFT JOIN finanzas2.cont_linea_negocio ln ON gl.linea_negocio_id = ln.id
                 LEFT JOIN finanzas2.cont_centro_costo cc ON gl.centro_costo_id = cc.id
+                LEFT JOIN finanzas2.fin_unidad_interna ui ON gl.unidad_interna_id = ui.id
                 WHERE gl.gasto_id = $1
             """, row['id'])
             gasto_dict['lineas'] = [dict(l) for l in lineas]
@@ -126,6 +165,12 @@ async def create_gasto(data: GastoCreate, empresa_id: int = Depends(get_empresa_
                 total = round(subtotal + igv + isc_val, 2)
             
             fecha_contable = data.fecha_contable or data.fecha
+
+            # Auto-correlativo para tipo_documento='otro' si no viene número
+            numero_documento_final = data.numero_documento
+            if (data.tipo_documento or '').lower() == 'otro' and not (numero_documento_final and numero_documento_final.strip()):
+                numero_documento_final = await _next_otro_correlativo(conn, empresa_id, data.fecha)
+
             # Resolve header-level dimensions
             tipo_asignacion = data.tipo_asignacion or 'directo'
             categoria_gasto_id = data.categoria_gasto_id
@@ -153,7 +198,7 @@ async def create_gasto(data: GastoCreate, empresa_id: int = Depends(get_empresa_
                 RETURNING *
             """, empresa_id, numero, safe_date_param(data.fecha), safe_date_param(fecha_contable), data.beneficiario_nombre,
                 data.proveedor_id, data.moneda_id, subtotal, igv, total,
-                data.tipo_documento, data.numero_documento, data.notas,
+                data.tipo_documento, numero_documento_final, data.notas,
                 data.tipo_comprobante_sunat, base_gravada, igv, base_no_gravada, isc_val, data.tipo_cambio,
                 categoria_gasto_id, tipo_asignacion, centro_costo_id_header, linea_negocio_id_header,
                 data.unidad_interna_id, cuenta_pago_id)
@@ -163,10 +208,10 @@ async def create_gasto(data: GastoCreate, empresa_id: int = Depends(get_empresa_
             for linea in data.lineas:
                 await conn.execute("""
                     INSERT INTO finanzas2.cont_gasto_linea
-                    (empresa_id, gasto_id, categoria_id, descripcion, importe, igv_aplica, linea_negocio_id, centro_costo_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    (empresa_id, gasto_id, categoria_id, descripcion, importe, igv_aplica, linea_negocio_id, centro_costo_id, unidad_interna_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 """, empresa_id, gasto_id, linea.categoria_id, linea.descripcion, linea.importe, linea.igv_aplica,
-                    linea.linea_negocio_id, linea.centro_costo_id)
+                    linea.linea_negocio_id, linea.centro_costo_id, linea.unidad_interna_id)
             
             # Process payments from the pagos array (new frontend structure)
             pago_id = None
@@ -182,7 +227,7 @@ async def create_gasto(data: GastoCreate, empresa_id: int = Depends(get_empresa_
                     VALUES ($1, $2, 'egreso', TO_DATE($3, 'YYYY-MM-DD'), $4, $5, $6, $7, $8, $9, $10)
                     RETURNING id
                 """, empresa_id, pago_numero, safe_date_param(data.fecha), data.pagos[0].cuenta_financiera_id,
-                    data.moneda_id, total, data.numero_documento or numero, data.notas, centro_costo_id_val, linea_negocio_id_val)
+                    data.moneda_id, total, numero_documento_final or numero, data.notas, centro_costo_id_val, linea_negocio_id_val)
                 pago_id = pago['id']
                 
                 # Insert pago detalles for each payment in the array
@@ -228,7 +273,7 @@ async def create_gasto(data: GastoCreate, empresa_id: int = Depends(get_empresa_
                     conn, empresa_id, data.fecha, 'egreso', total,
                     cuenta_financiera_id=data.pagos[0].cuenta_financiera_id,
                     forma_pago=data.pagos[0].medio_pago,
-                    referencia=data.numero_documento or numero,
+                    referencia=numero_documento_final or numero,
                     concepto=f"Gasto {numero}",
                     origen_tipo='gasto_directo',
                     origen_id=gasto_id,
@@ -295,11 +340,13 @@ async def create_gasto(data: GastoCreate, empresa_id: int = Depends(get_empresa_
                 gasto_dict.update(dict(enriched))
             lineas = await conn.fetch("""
                 SELECT gl.*, c.nombre as categoria_nombre,
-                       ln.nombre as linea_negocio_nombre, cc.nombre as centro_costo_nombre
+                       ln.nombre as linea_negocio_nombre, cc.nombre as centro_costo_nombre,
+                       ui.nombre as unidad_interna_nombre
                 FROM finanzas2.cont_gasto_linea gl
                 LEFT JOIN finanzas2.cont_categoria c ON gl.categoria_id = c.id
                 LEFT JOIN finanzas2.cont_linea_negocio ln ON gl.linea_negocio_id = ln.id
                 LEFT JOIN finanzas2.cont_centro_costo cc ON gl.centro_costo_id = cc.id
+                LEFT JOIN finanzas2.fin_unidad_interna ui ON gl.unidad_interna_id = ui.id
                 WHERE gl.gasto_id = $1
             """, gasto_id)
             gasto_dict['lineas'] = [dict(l) for l in lineas]
@@ -511,10 +558,10 @@ async def update_gasto(id: int, data: GastoCreate, empresa_id: int = Depends(get
             for linea in data.lineas:
                 await conn.execute("""
                     INSERT INTO finanzas2.cont_gasto_linea
-                    (empresa_id, gasto_id, categoria_id, descripcion, importe, igv_aplica, linea_negocio_id, centro_costo_id)
-                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                    (empresa_id, gasto_id, categoria_id, descripcion, importe, igv_aplica, linea_negocio_id, centro_costo_id, unidad_interna_id)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
                 """, empresa_id, id, linea.categoria_id, linea.descripcion, linea.importe, linea.igv_aplica,
-                    linea.linea_negocio_id, linea.centro_costo_id)
+                    linea.linea_negocio_id, linea.centro_costo_id, linea.unidad_interna_id)
 
             # Return enriched gasto
             row = await conn.fetchrow("""

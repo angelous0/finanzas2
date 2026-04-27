@@ -8,6 +8,7 @@ import {
   updateGasto,
   deleteGasto,
   deleteGastoPago,
+  getNextOtroCorrelativo,
   getProveedores,
   getMonedas,
   getCategorias,
@@ -129,6 +130,7 @@ export default function Gastos() {
     descripcion: '',
     linea_negocio_id: '',
     centro_costo_id: '',
+    unidad_interna_id: '',
     importe: 0,
     igv_aplica: true
   }]);
@@ -270,6 +272,7 @@ export default function Gastos() {
       descripcion: '',
       linea_negocio_id: '',
       centro_costo_id: '',
+      unidad_interna_id: '',
       importe: 0,
       igv_aplica: true
     }]);
@@ -290,6 +293,7 @@ export default function Gastos() {
       descripcion: '',
       linea_negocio_id: '',
       centro_costo_id: '',
+      unidad_interna_id: '',
       importe: 0,
       igv_aplica: true
     }]);
@@ -382,18 +386,22 @@ export default function Gastos() {
       // Auto-determine tipo_asignacion and header-level fields from lines
       const lineasValidas = lineasGasto.filter(l => l.importe > 0);
       const hayLineaNegocio = lineasValidas.some(l => l.linea_negocio_id);
-      const tipoAsignacion = hayLineaNegocio ? 'directo' : 'no_asignado';
+      const catGastoSel = categoriasGasto.find(c => c.id === formData.categoria_gasto_id);
+      // Si la categoría de gasto es CIF -> 'comun' (se prorratea); si tiene línea de negocio en la línea -> 'directo'; sino -> 'no_asignado'
+      const tipoAsignacion = catGastoSel?.es_cif ? 'comun'
+        : hayLineaNegocio ? 'directo' : 'no_asignado';
       const primeraLineaConLinea = lineasValidas.find(l => l.linea_negocio_id);
       const primeraLineaConCentro = lineasValidas.find(l => l.centro_costo_id);
+      const primeraLineaConUnidad = lineasValidas.find(l => l.unidad_interna_id);
 
       const payload = {
         ...formData,
         proveedor_id: formData.proveedor_id || null,
         tipo_cambio: formData.tipo_cambio ? parseFloat(formData.tipo_cambio) : null,
-        categoria_gasto_id: null,
+        categoria_gasto_id: formData.categoria_gasto_id || null,
         tipo_asignacion: tipoAsignacion,
         centro_costo_id: primeraLineaConCentro ? parseInt(primeraLineaConCentro.centro_costo_id) : null,
-        unidad_interna_id: formData.unidad_interna_id ? parseInt(formData.unidad_interna_id) : null,
+        unidad_interna_id: primeraLineaConUnidad ? parseInt(primeraLineaConUnidad.unidad_interna_id) : null,
         linea_negocio_id: primeraLineaConLinea ? parseInt(primeraLineaConLinea.linea_negocio_id) : null,
         base_gravada: totales.base_gravada,
         igv_sunat: totales.igv_sunat,
@@ -404,6 +412,7 @@ export default function Gastos() {
           descripcion: l.descripcion || null,
           linea_negocio_id: l.linea_negocio_id || null,
           centro_costo_id: l.centro_costo_id || null,
+          unidad_interna_id: l.unidad_interna_id ? parseInt(l.unidad_interna_id) : null,
           importe: parseFloat(l.importe),
           igv_aplica: l.igv_aplica
         })),
@@ -471,8 +480,9 @@ export default function Gastos() {
             igv_aplica: l.igv_aplica !== false,
             linea_negocio_id: l.linea_negocio_id || '',
             centro_costo_id: l.centro_costo_id || '',
+            unidad_interna_id: l.unidad_interna_id || '',
           }))
-        : [{ categoria_id: '', descripcion: '', importe: 0, igv_aplica: true, linea_negocio_id: '', centro_costo_id: '' }]
+        : [{ categoria_id: '', descripcion: '', importe: 0, igv_aplica: true, linea_negocio_id: '', centro_costo_id: '', unidad_interna_id: '' }]
       );
       setPagosExistentes(g.pagos_vinculados || []);
       setTotalPagado(g.total_pagado || 0);
@@ -903,15 +913,31 @@ export default function Gastos() {
                   <div className="form-group">
                     <label className="form-label">Fecha *</label>
                     <input type="date" className="form-input" value={formData.fecha}
-                      onChange={(e) => {
+                      onChange={async (e) => {
                         const nf = e.target.value;
                         setFormData(prev => ({ ...prev, fecha: nf, ...(!fechaContableManual ? { fecha_contable: nf } : {}) }));
+                        // Si está en "Otro", recalcular correlativo del nuevo día
+                        if (formData.tipo_documento === 'otro' && nf) {
+                          try {
+                            const r = await getNextOtroCorrelativo(nf);
+                            setFormData(prev => ({ ...prev, fecha: nf, numero_documento: r.data.numero_documento }));
+                          } catch { /* silencioso */ }
+                        }
                       }} required />
                   </div>
                   <div className="form-group">
                     <label className="form-label">Tipo Doc.</label>
                     <select className="form-input form-select" value={formData.tipo_documento}
-                      onChange={(e) => setFormData({ ...formData, tipo_documento: e.target.value })}>
+                      onChange={async (e) => {
+                        const nuevo = e.target.value;
+                        setFormData(prev => ({ ...prev, tipo_documento: nuevo }));
+                        if (nuevo === 'otro' && formData.fecha) {
+                          try {
+                            const r = await getNextOtroCorrelativo(formData.fecha);
+                            setFormData(prev => ({ ...prev, tipo_documento: 'otro', numero_documento: r.data.numero_documento }));
+                          } catch { /* silencioso */ }
+                        }
+                      }}>
                       <option value="boleta">Boleta</option>
                       <option value="factura">Factura</option>
                       <option value="recibo">Recibo</option>
@@ -923,7 +949,7 @@ export default function Gastos() {
                     <label className="form-label">N Doc.</label>
                     <input type="text" className="form-input" value={formData.numero_documento}
                       onChange={(e) => setFormData({ ...formData, numero_documento: e.target.value })}
-                      placeholder="001-00001" />
+                      placeholder={formData.tipo_documento === 'otro' ? 'MM-YYYY-0001' : '001-00001'} />
                   </div>
                   <div className="form-group">
                     <label className="form-label">Moneda</label>
@@ -1041,8 +1067,9 @@ export default function Gastos() {
                         <tr>
                           <th style={{ width: '170px' }}>Categoria</th>
                           <th>Descripcion</th>
-                          <th style={{ width: '140px' }}>Linea Negocio</th>
+                          <th style={{ width: '130px' }}>Linea Negocio</th>
                           <th style={{ width: '130px' }}>Centro Costo</th>
+                          <th style={{ width: '130px' }}>Unidad Interna</th>
                           <th style={{ width: '100px' }}>Importe</th>
                           <th style={{ width: '45px' }}>IGV</th>
                           <th style={{ width: '36px' }}></th>
@@ -1081,6 +1108,14 @@ export default function Gastos() {
                               </select>
                             </td>
                             <td>
+                              <select className="form-input form-select" value={linea.unidad_interna_id}
+                                onChange={(e) => handleLineaChange(index, 'unidad_interna_id', e.target.value)}
+                                style={{ fontSize: '0.8125rem' }}>
+                                <option value="">-</option>
+                                {unidadesInternas.map(u => <option key={u.id} value={u.id}>{u.nombre}</option>)}
+                              </select>
+                            </td>
+                            <td>
                               <input type="number" step="0.01" className="form-input text-right" value={linea.importe}
                                 onChange={(e) => handleLineaChange(index, 'importe', e.target.value)}
                                 style={{ fontSize: '0.8125rem', fontFamily: "'JetBrains Mono', monospace" }} />
@@ -1102,21 +1137,21 @@ export default function Gastos() {
                       </tbody>
                       <tfoot>
                         <tr>
-                          <td colSpan={4} className="text-right" style={{ fontWeight: 500, fontSize: '0.8125rem' }}>Subtotal:</td>
+                          <td colSpan={5} className="text-right" style={{ fontWeight: 500, fontSize: '0.8125rem' }}>Subtotal:</td>
                           <td className="text-right" style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>
                             {formatCurrency(totales.subtotal, monedaActual?.simbolo)}
                           </td>
                           <td colSpan={2}></td>
                         </tr>
                         <tr>
-                          <td colSpan={4} className="text-right" style={{ fontWeight: 500, fontSize: '0.8125rem' }}>IGV (18%):</td>
+                          <td colSpan={5} className="text-right" style={{ fontWeight: 500, fontSize: '0.8125rem' }}>IGV (18%):</td>
                           <td className="text-right" style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '0.8125rem', whiteSpace: 'nowrap' }}>
                             {formatCurrency(totales.igv, monedaActual?.simbolo)}
                           </td>
                           <td colSpan={2}></td>
                         </tr>
                         <tr style={{ background: 'var(--card-bg-hover)' }}>
-                          <td colSpan={4} className="text-right" style={{ fontWeight: 700, fontSize: '0.9375rem' }}>TOTAL:</td>
+                          <td colSpan={5} className="text-right" style={{ fontWeight: 700, fontSize: '0.9375rem' }}>TOTAL:</td>
                           <td className="text-right" style={{ fontFamily: "'JetBrains Mono', monospace", fontWeight: 700, fontSize: '0.9375rem', color: 'var(--primary)', whiteSpace: 'nowrap' }}>
                             {formatCurrency(totales.total, monedaActual?.simbolo)}
                           </td>
@@ -1299,24 +1334,29 @@ export default function Gastos() {
                   );
                 })()}
 
-                {/* Unidad Interna */}
-                {unidadesInternas.length > 0 && (
-                  <div className="form-group" style={{ marginTop: '0.75rem' }}>
-                    <label className="form-label">Unidad Interna (opcional)</label>
-                    <select className="form-input" value={formData.unidad_interna_id}
-                      onChange={(e) => setFormData({ ...formData, unidad_interna_id: e.target.value })}>
-                      <option value="">Sin asignar</option>
-                      {unidadesInternas.map(u => (
-                        <option key={u.id} value={u.id}>{u.nombre}</option>
+                {/* Categoría de Gasto (CIF / No CIF) — la Unidad Interna ahora va por línea */}
+                <div className="form-group" style={{ marginTop: '0.75rem' }}>
+                  <label className="form-label">Categoría de Gasto (CIF / No CIF)</label>
+                  <select className="form-input" value={formData.categoria_gasto_id || ''}
+                    onChange={(e) => setFormData({ ...formData, categoria_gasto_id: e.target.value ? parseInt(e.target.value) : null })}>
+                    <option value="">— Sin clasificar —</option>
+                    <optgroup label="CIF (costos indirectos de fabricación)">
+                      {categoriasGasto.filter(c => c.es_cif).map(c => (
+                        <option key={c.id} value={c.id}>{c.nombre}</option>
                       ))}
-                    </select>
-                    {categoriasGasto.find(c => c.id === formData.categoria_gasto_id && c.es_cif) && (
-                      <p style={{ fontSize: '11px', color: 'var(--success-text)', marginTop: 4, background: 'var(--success-bg)', padding: '4px 8px', borderRadius: 6, display: 'inline-block' }}>
-                        CIF — se distribuye entre lotes del periodo
-                      </p>
-                    )}
-                  </div>
-                )}
+                    </optgroup>
+                    <optgroup label="No CIF (administrativo / comercial)">
+                      {categoriasGasto.filter(c => !c.es_cif).map(c => (
+                        <option key={c.id} value={c.id}>{c.nombre}</option>
+                      ))}
+                    </optgroup>
+                  </select>
+                  {categoriasGasto.find(c => c.id === formData.categoria_gasto_id && c.es_cif) && (
+                    <p style={{ fontSize: '11px', color: 'var(--success-text)', marginTop: 4, background: 'var(--success-bg)', padding: '4px 8px', borderRadius: 6, display: 'inline-block' }}>
+                      CIF — se distribuye entre lotes del periodo
+                    </p>
+                  )}
+                </div>
 
                 {/* Notas */}
                 <div className="form-group" style={{ marginTop: '0.75rem' }}>

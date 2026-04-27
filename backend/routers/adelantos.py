@@ -10,6 +10,7 @@ from typing import Optional
 from datetime import date
 from database import get_pool
 from dependencies import get_empresa_id
+from services.treasury_service import create_movimiento_tesoreria, delete_movimientos_by_origen
 
 router = APIRouter(tags=["Adelantos Trabajador"])
 
@@ -98,24 +99,25 @@ async def create_adelanto(data: AdelantoIn, empresa_id: int = Depends(get_empres
                 RETURNING *
             """, empresa_id, data.trabajador_id, data.fecha, data.monto, data.motivo, data.cuenta_pago_id)
 
-            # Generar EGRESO
+            # Generar EGRESO en cont_movimiento_tesoreria (fuente única de verdad)
             desc = f"Adelanto a {trab['nombre']}" + (f" — {data.motivo}" if data.motivo else "")
-            mov = await conn.fetchrow("""
-                INSERT INTO finanzas2.fin_movimiento_cuenta
-                    (cuenta_id, empresa_id, tipo, monto, descripcion, fecha, referencia_id, referencia_tipo)
-                VALUES ($1, $2, 'EGRESO', $3, $4, $5, $6, 'adelanto')
-                RETURNING id
-            """, data.cuenta_pago_id, empresa_id, data.monto, desc, data.fecha, str(adel['id']))
+            mov_id = await create_movimiento_tesoreria(
+                conn, empresa_id, data.fecha, 'egreso', float(data.monto),
+                cuenta_financiera_id=data.cuenta_pago_id,
+                concepto=desc,
+                origen_tipo='adelanto_trabajador',
+                origen_id=adel['id'],
+            )
 
             await conn.execute("""
                 UPDATE finanzas2.cont_cuenta_financiera
-                   SET saldo_actual = saldo_actual - $1, updated_at = NOW()
+                   SET saldo_actual = COALESCE(saldo_actual, 0) - $1, updated_at = NOW()
                  WHERE id = $2
             """, data.monto, data.cuenta_pago_id)
 
             await conn.execute(
                 "UPDATE finanzas2.fin_adelanto_trabajador SET movimiento_cuenta_id = $1 WHERE id = $2",
-                mov['id'], adel['id'])
+                mov_id, adel['id'])
 
             # Devolver con datos enriquecidos
             full = await conn.fetchrow("""
@@ -143,16 +145,13 @@ async def delete_adelanto(adelanto_id: int, empresa_id: int = Depends(get_empres
                 raise HTTPException(400, "No se puede eliminar: el adelanto ya fue descontado en una planilla")
 
             if adel['movimiento_cuenta_id']:
-                await conn.execute("""
-                    INSERT INTO finanzas2.fin_movimiento_cuenta
-                        (cuenta_id, empresa_id, tipo, monto, descripcion, fecha, referencia_id, referencia_tipo)
-                    VALUES ($1, $2, 'INGRESO', $3, $4, CURRENT_DATE, $5, 'adelanto_reverso')
-                """, adel['cuenta_pago_id'], empresa_id, adel['monto'],
-                     f"Reversión adelanto #{adel['id']}", str(adel['id']))
-
+                # Eliminar el egreso registrado en cont_movimiento_tesoreria
+                await delete_movimientos_by_origen(
+                    conn, empresa_id, 'adelanto_trabajador', adel['id'])
+                # Restaurar saldo
                 await conn.execute("""
                     UPDATE finanzas2.cont_cuenta_financiera
-                       SET saldo_actual = saldo_actual + $1, updated_at = NOW()
+                       SET saldo_actual = COALESCE(saldo_actual, 0) + $1, updated_at = NOW()
                      WHERE id = $2
                 """, adel['monto'], adel['cuenta_pago_id'])
 

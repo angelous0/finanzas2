@@ -361,8 +361,17 @@ async def list_cxp(
                        WHEN cxp.fecha_vencimiento >= CURRENT_DATE THEN 0
                        ELSE CURRENT_DATE - cxp.fecha_vencimiento
                    END as dias_vencido,
-                   COALESCE(
-                       (SELECT SUM(a.monto) FROM cont_cxp_abono a WHERE a.cxp_id = cxp.id), 0
+                   -- Abonado = lo que ya se ha pagado de esta CxP, sumando 3 fuentes:
+                   --   1) Abonos directos a la CxP (cont_cxp_abono)
+                   --   2) Pagos aplicados a la factura asociada (cont_pago_aplicacion)
+                   --   3) Pagos a letras canjeadas (monto - saldo_pendiente de cont_letra)
+                   GREATEST(
+                     COALESCE(cxp.monto_original, 0) - COALESCE(cxp.saldo_pendiente, 0),
+                     COALESCE((SELECT SUM(a.monto) FROM cont_cxp_abono a WHERE a.cxp_id = cxp.id), 0)
+                       + COALESCE((SELECT SUM(pa.monto_aplicado) FROM cont_pago_aplicacion pa
+                                    WHERE pa.tipo_documento='factura' AND pa.documento_id = cxp.factura_id), 0)
+                       + COALESCE((SELECT SUM(l.monto - COALESCE(l.saldo_pendiente, l.monto))
+                                     FROM cont_letra l WHERE l.factura_id = cxp.factura_id), 0)
                    ) as total_abonado
             FROM cont_cxp cxp
             LEFT JOIN cont_tercero t ON cxp.proveedor_id = t.id

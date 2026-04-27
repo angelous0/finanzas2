@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { formatCurrency, formatDate, estadoBadge } from './helpers';
 import { Plus, Trash2, Search, X, FileText, Edit2, Eye, DollarSign, FileSpreadsheet, History, Download, Link2, MoreVertical, CheckCircle2, RotateCcw, Factory } from 'lucide-react';
 import { toast } from 'sonner';
@@ -12,6 +13,7 @@ const FacturasTable = ({
   onOpenPago, onOpenLetras, onVerPagos, onVerLetras, onView, onEdit, onDelete, onDownloadPDF,
   onNewFactura, onVincularIngresos, onRefresh,
 }) => {
+  // openMenu: null | { id, direction: 'up' | 'down' }
   const [openMenu, setOpenMenu] = React.useState(null);
 
   const facturasFiltradas = filtroNumero
@@ -31,6 +33,23 @@ const FacturasTable = ({
     document.addEventListener('click', handler);
     return () => document.removeEventListener('click', handler);
   }, [openMenu]);
+
+  // Smart-position con Portal: el menú se renderiza fuera de la tabla
+  // (en document.body) para escapar overflow:hidden y posicionarse libremente.
+  const MENU_WIDTH = 200;
+  const toggleMenu = (e, facturaId, itemsCount) => {
+    e.stopPropagation();
+    if (openMenu?.id === facturaId) { setOpenMenu(null); return; }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const approxMenuH = (itemsCount * 34) + 16;
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const spaceAbove = rect.top;
+    const openUp = spaceBelow < approxMenuH && spaceAbove > approxMenuH;
+    // Coordenadas en viewport (position:fixed)
+    const top = openUp ? rect.top - approxMenuH - 4 : rect.bottom + 4;
+    const right = window.innerWidth - rect.right;  // alinear borde derecho con botón
+    setOpenMenu({ id: facturaId, top, right, direction: openUp ? 'up' : 'down' });
+  };
 
   return (
     <>
@@ -105,14 +124,17 @@ const FacturasTable = ({
               </thead>
               <tbody>
                 {facturasFiltradas.map((factura) => {
-                  const saldo = parseFloat(factura.saldo_pendiente) || 0;
+                  const saldoFactura = parseFloat(factura.saldo_pendiente) || 0;
                   const total = parseFloat(factura.total) || 0;
-                  const pagado = total - saldo;
-                  const puedeGenerarLetras = factura.estado === 'pendiente' && saldo > 0;
-                  const puedePagar = (factura.estado === 'pendiente' || factura.estado === 'parcial') && saldo > 0;
-                  const tienePagos = pagado > 0;
                   const estaCanjeado = factura.estado === 'canjeado';
-                  const isMenuOpen = openMenu === factura.id;
+                  // Si está canjeada: pagado/saldo se calculan desde las LETRAS, no desde la factura
+                  const letras = factura.letras_resumen || { pagado: 0, pendiente: 0 };
+                  const pagado = estaCanjeado ? letras.pagado : (total - saldoFactura);
+                  const saldo = estaCanjeado ? letras.pendiente : saldoFactura;
+                  const puedeGenerarLetras = factura.estado === 'pendiente' && saldoFactura > 0;
+                  const puedePagar = (factura.estado === 'pendiente' || factura.estado === 'parcial') && saldoFactura > 0;
+                  const tienePagos = pagado > 0;
+                  const isMenuOpen = openMenu?.id === factura.id;
 
                   const esNotaInterna = factura.tipo_documento === 'nota_interna';
                   const niPendiente = esNotaInterna && factura.estado === 'pendiente';
@@ -214,46 +236,52 @@ const FacturasTable = ({
                           )}
                           <button className="action-btn" onClick={() => onDownloadPDF(factura)} title="PDF" data-testid={`pdf-factura-${factura.id}`}><Download size={15} /></button>
                           {menuItems.length > 0 && (
-                            <div style={{ position: 'relative' }}>
-                              <button
-                                className="action-btn"
-                                onClick={(e) => { e.stopPropagation(); setOpenMenu(isMenuOpen ? null : factura.id); }}
-                                title="Mas acciones"
-                                data-testid={`menu-factura-${factura.id}`}
-                                style={{ background: isMenuOpen ? 'var(--card-bg-alt)' : undefined }}
-                              >
-                                <MoreVertical size={15} />
-                              </button>
-                              {isMenuOpen && (
-                                <div
-                                  data-testid={`dropdown-factura-${factura.id}`}
+                            <button
+                              className="action-btn"
+                              onClick={(e) => toggleMenu(e, factura.id, menuItems.length)}
+                              title="Mas acciones"
+                              data-testid={`menu-factura-${factura.id}`}
+                              style={{ background: isMenuOpen ? 'var(--card-bg-alt)' : undefined }}
+                            >
+                              <MoreVertical size={15} />
+                            </button>
+                          )}
+                          {isMenuOpen && menuItems.length > 0 && createPortal(
+                            <div
+                              data-testid={`dropdown-factura-${factura.id}`}
+                              onClick={(e) => e.stopPropagation()}
+                              style={{
+                                position: 'fixed',
+                                top: openMenu.top,
+                                right: openMenu.right,
+                                zIndex: 9999,
+                                background: 'var(--card-bg)',
+                                border: '1px solid var(--border)',
+                                borderRadius: '8px',
+                                boxShadow: '0 12px 32px rgba(0,0,0,0.22)',
+                                minWidth: '200px',
+                                padding: '4px 0'
+                              }}
+                            >
+                              {menuItems.map((item, i) => (
+                                <button
+                                  key={i}
+                                  onClick={(e) => { e.stopPropagation(); setOpenMenu(null); item.action(); }}
+                                  data-testid={item.testId}
                                   style={{
-                                    position: 'absolute', right: 0, top: '100%', zIndex: 50,
-                                    background: 'var(--card-bg)', border: '1px solid var(--border)', borderRadius: '8px',
-                                    boxShadow: '0 8px 24px rgba(0,0,0,0.12)', minWidth: '180px',
-                                    padding: '4px 0', marginTop: '2px'
+                                    display: 'flex', alignItems: 'center', gap: '8px', width: '100%',
+                                    padding: '8px 12px', border: 'none', background: 'none', cursor: 'pointer',
+                                    fontSize: '0.8rem', color: item.color, fontWeight: 500,
+                                    transition: 'background 0.1s', textAlign: 'left'
                                   }}
+                                  onMouseEnter={e => e.currentTarget.style.background = 'var(--card-bg-hover)'}
+                                  onMouseLeave={e => e.currentTarget.style.background = 'none'}
                                 >
-                                  {menuItems.map((item, i) => (
-                                    <button
-                                      key={i}
-                                      onClick={(e) => { e.stopPropagation(); setOpenMenu(null); item.action(); }}
-                                      data-testid={item.testId}
-                                      style={{
-                                        display: 'flex', alignItems: 'center', gap: '8px', width: '100%',
-                                        padding: '7px 12px', border: 'none', background: 'none', cursor: 'pointer',
-                                        fontSize: '0.8rem', color: item.color, fontWeight: 500,
-                                        transition: 'background 0.1s'
-                                      }}
-                                      onMouseEnter={e => e.currentTarget.style.background = 'var(--card-bg-hover)'}
-                                      onMouseLeave={e => e.currentTarget.style.background = 'none'}
-                                    >
-                                      <item.icon size={14} />{item.label}
-                                    </button>
-                                  ))}
-                                </div>
-                              )}
-                            </div>
+                                  <item.icon size={14} />{item.label}
+                                </button>
+                              ))}
+                            </div>,
+                            document.body
                           )}
                         </div>
                       </td>

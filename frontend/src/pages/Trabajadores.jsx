@@ -1,14 +1,22 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, Pencil, Trash2, X, Users, Calculator, Check, ChevronDown, ChevronUp, CreditCard } from 'lucide-react';
+import { Plus, Pencil, Trash2, X, Users, Calculator, Check, ChevronDown, ChevronUp, CreditCard, Scissors } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   getTrabajadores, createTrabajador, updateTrabajador, deleteTrabajador,
   previewCalculosTrabajador, getAfps, getUnidadesInternas, getAjustesPlanilla,
   getCuentasFinancieras, getMediosPagoTrabajador, setMediosPagoTrabajador,
+  getTarifasDestajoTrabajador, setTarifasDestajoTrabajador,
+  getPersonasProduccionDisponibles, getServiciosProduccion,
 } from '../services/api';
 import { useEmpresa } from '../context/EmpresaContext';
 
 const AREAS = ['ADMINISTRACION', 'PRODUCCION', 'VENTAS', 'MARKETING'];
+
+const TIPOS_PAGO = [
+  { value: 'planilla', label: 'Planilla (jornal)', hint: 'Sueldo fijo por quincena basado en horas' },
+  { value: 'destajo',  label: 'Destajo',            hint: 'Pago por prendas trabajadas (sin sueldo fijo)' },
+  { value: 'mixto',    label: 'Mixto',              hint: 'Sueldo fijo + pago por prendas' },
+];
 
 const fmt = (v) => `S/ ${Number(v || 0).toLocaleString('es-PE', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
@@ -23,6 +31,8 @@ const emptyForm = {
   fecha_ingreso: '',
   activo: true,
   notas: '',
+  tipo_pago: 'planilla',
+  prod_persona_id: '',
 };
 
 export default function Trabajadores() {
@@ -43,6 +53,9 @@ export default function Trabajadores() {
   const [calculos, setCalculos] = useState(null);
   const [saving, setSaving] = useState(false);
   const [medios, setMedios] = useState([]);  // Medios de pago default del trabajador
+  const [tarifasDestajo, setTarifasDestajo] = useState([]);  // Tarifas destajo del trabajador
+  const [personasProd, setPersonasProd] = useState([]);  // Para linkear
+  const [serviciosProd, setServiciosProd] = useState([]);  // Catálogo
 
   const load = useCallback(async () => {
     if (!empresaActual) return;
@@ -51,18 +64,24 @@ export default function Trabajadores() {
       const params = {};
       if (filtroArea) params.area = filtroArea;
       if (filtroActivo !== null) params.activo = filtroActivo;
-      const [t, a, u, aj, c] = await Promise.all([
+      const [t, a, u, aj, c, sp, pp] = await Promise.all([
         getTrabajadores(params),
         getAfps({ activo: true }),
         getUnidadesInternas(),
         getAjustesPlanilla(),
         getCuentasFinancieras(),
+        getServiciosProduccion().catch(() => ({ data: [] })),
+        getPersonasProduccionDisponibles().catch(() => ({ data: [] })),
       ]);
       setTrabajadores(t.data || []);
       setAfps(a.data || []);
       setUnidades(u.data || []);
       setAjustes(aj.data);
-      setCuentas((c.data || []).filter(ct => !ct.es_ficticia && ct.activo !== false));
+      // Cargamos TODAS las cuentas activas (incluyendo ficticias de unidades internas).
+      // El filtro por unidad_interna_id del trabajador se aplica al renderizar el select.
+      setCuentas((c.data || []).filter(ct => ct.activo !== false));
+      setServiciosProd(sp.data || []);
+      setPersonasProd(pp.data || []);
     } catch (e) {
       toast.error('Error cargando trabajadores');
     } finally { setLoading(false); }
@@ -97,6 +116,7 @@ export default function Trabajadores() {
     setForm({ ...emptyForm, horas_quincenales: ajustes?.horas_quincena_default || 120 });
     setShowSueldoDetalle(false);
     setMedios([]);
+    setTarifasDestajo([]);
     setShowForm(true);
   };
 
@@ -116,15 +136,27 @@ export default function Trabajadores() {
       fecha_ingreso: t.fecha_ingreso ? String(t.fecha_ingreso).split('T')[0] : '',
       activo: t.activo !== false,
       notas: t.notas || '',
+      tipo_pago: t.tipo_pago || 'planilla',
+      prod_persona_id: t.prod_persona_id || '',
     });
     setShowSueldoDetalle(
       (parseFloat(t.sueldo_planilla) || 0) !== 0 && (parseFloat(t.sueldo_basico) || 0) !== 0
     );
-    // Cargar medios de pago default
+    // Cargar medios de pago + tarifas destajo
     try {
-      const r = await getMediosPagoTrabajador(t.id);
-      setMedios((r.data || []).map(m => ({ cuenta_id: m.cuenta_id, porcentaje: m.porcentaje })));
-    } catch { setMedios([]); }
+      const [rm, rt] = await Promise.all([
+        getMediosPagoTrabajador(t.id),
+        getTarifasDestajoTrabajador(t.id).catch(() => ({ data: [] })),
+      ]);
+      setMedios((rm.data || []).map(m => ({ cuenta_id: m.cuenta_id, porcentaje: m.porcentaje })));
+      setTarifasDestajo((rt.data || []).map(x => ({
+        servicio_nombre: x.servicio_nombre,
+        tarifa: x.tarifa,
+      })));
+    } catch {
+      setMedios([]);
+      setTarifasDestajo([]);
+    }
     setShowForm(true);
   };
 
@@ -143,12 +175,23 @@ export default function Trabajadores() {
       afp_id: form.afp_id ? parseInt(form.afp_id) : null,
       fecha_ingreso: form.fecha_ingreso || null,
       notas: form.notas || null,
+      tipo_pago: form.tipo_pago || 'planilla',
+      prod_persona_id: form.prod_persona_id || null,
     };
     // Validar medios de pago default
     const mediosValidos = medios.filter(m => m.cuenta_id && parseFloat(m.porcentaje) > 0);
     const sumaPct = mediosValidos.reduce((s, m) => s + (parseFloat(m.porcentaje) || 0), 0);
     if (mediosValidos.length > 0 && Math.abs(sumaPct - 100) > 0.01) {
       toast.error(`La suma de porcentajes de medios de pago debe ser 100% (actual: ${sumaPct.toFixed(2)}%)`);
+      return;
+    }
+    // Validar tarifas destajo: si tipo_pago incluye destajo, debe tener al menos una tarifa
+    const requiereDestajo = payload.tipo_pago === 'destajo' || payload.tipo_pago === 'mixto';
+    const tarifasValidas = tarifasDestajo.filter(
+      x => x.servicio_nombre && parseFloat(x.tarifa) >= 0
+    );
+    if (requiereDestajo && tarifasValidas.length === 0) {
+      toast.error(`Un trabajador "${payload.tipo_pago}" debe tener al menos una tarifa de destajo configurada`);
       return;
     }
 
@@ -164,11 +207,17 @@ export default function Trabajadores() {
         trabajadorId = r.data.id;
         toast.success('Trabajador creado');
       }
-      // Guardar medios de pago
-      await setMediosPagoTrabajador(trabajadorId, mediosValidos.map(m => ({
-        cuenta_id: parseInt(m.cuenta_id),
-        porcentaje: parseFloat(m.porcentaje),
-      })));
+      // Guardar medios de pago + tarifas destajo en paralelo
+      await Promise.all([
+        setMediosPagoTrabajador(trabajadorId, mediosValidos.map(m => ({
+          cuenta_id: parseInt(m.cuenta_id),
+          porcentaje: parseFloat(m.porcentaje),
+        }))),
+        setTarifasDestajoTrabajador(trabajadorId, tarifasValidas.map(x => ({
+          servicio_nombre: x.servicio_nombre,
+          tarifa: parseFloat(x.tarifa),
+        }))),
+      ]);
       setShowForm(false);
       load();
     } catch (err) {
@@ -176,6 +225,13 @@ export default function Trabajadores() {
       toast.error(msg);
     } finally { setSaving(false); }
   };
+
+  // Helpers para editar tarifas destajo
+  const agregarTarifaDestajo = () => setTarifasDestajo(prev => [...prev, { servicio_nombre: '', tarifa: '' }]);
+  const actualizarTarifaDestajo = (idx, campo, valor) => setTarifasDestajo(prev => {
+    const arr = [...prev]; arr[idx] = { ...arr[idx], [campo]: valor }; return arr;
+  });
+  const eliminarTarifaDestajo = (idx) => setTarifasDestajo(prev => prev.filter((_, i) => i !== idx));
 
   const agregarMedio = () => setMedios(prev => [...prev, { cuenta_id: '', porcentaje: '' }]);
   const actualizarMedio = (idx, campo, valor) => setMedios(prev => {
@@ -446,20 +502,146 @@ export default function Trabajadores() {
                   </div>
                 </section>
 
+                {/* Tipo de pago + link con Producción */}
+                <section>
+                  <h3 className="text-xs font-semibold uppercase text-muted-foreground mb-2 flex items-center gap-1.5">
+                    <Scissors size={13}/> Tipo de pago
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                    {TIPOS_PAGO.map(tp => (
+                      <label key={tp.value}
+                        className={`border rounded-md p-2 cursor-pointer transition-colors ${
+                          form.tipo_pago === tp.value
+                            ? 'border-emerald-500 bg-emerald-500/5'
+                            : 'border-border hover:bg-muted/50'
+                        }`}>
+                        <input type="radio" name="tipo_pago" value={tp.value}
+                          checked={form.tipo_pago === tp.value}
+                          onChange={e => setForm({ ...form, tipo_pago: e.target.value })}
+                          className="hidden"/>
+                        <div className="flex items-center gap-1.5">
+                          <div className={`h-3 w-3 rounded-full border-2 ${
+                            form.tipo_pago === tp.value
+                              ? 'border-emerald-600 bg-emerald-600'
+                              : 'border-muted-foreground'
+                          }`}/>
+                          <div className="text-xs font-medium">{tp.label}</div>
+                        </div>
+                        <div className="text-[10px] text-muted-foreground mt-0.5 ml-4.5">{tp.hint}</div>
+                      </label>
+                    ))}
+                  </div>
+
+                  {/* Link con Producción (solo si destajo/mixto) */}
+                  {(form.tipo_pago === 'destajo' || form.tipo_pago === 'mixto') && (
+                    <div className="mt-3 space-y-2">
+                      <label className="text-xs font-medium text-muted-foreground block">
+                        Persona en Producción <span className="text-[10px] text-muted-foreground/70">(para cruzar los movimientos y calcular el pago)</span>
+                      </label>
+                      <select value={form.prod_persona_id || ''}
+                        onChange={e => setForm({ ...form, prod_persona_id: e.target.value })}
+                        className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background"
+                        data-testid="form-prod-persona">
+                        <option value="">— Sin vincular —</option>
+                        {personasProd.map(p => {
+                          const ocupada = p.trabajador_id && p.trabajador_id !== editing?.id;
+                          return (
+                            <option key={p.id} value={p.id} disabled={ocupada}>
+                              {p.nombre}
+                              {p.unidad_interna_nombre ? ` · ${p.unidad_interna_nombre}` : ''}
+                              {p.tipo_persona ? ` [${p.tipo_persona}]` : ''}
+                              {ocupada ? ` — ya vinculada a ${p.trabajador_nombre}` : ''}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </div>
+                  )}
+                </section>
+
+                {/* Tarifas destajo (solo si destajo/mixto) */}
+                {(form.tipo_pago === 'destajo' || form.tipo_pago === 'mixto') && (
+                  <section>
+                    <h3 className="text-xs font-semibold uppercase text-muted-foreground mb-2 flex items-center gap-1.5">
+                      <Scissors size={13}/> Tarifas destajo
+                      <span className="text-[10px] text-muted-foreground/70 normal-case font-normal">
+                        (lo que se paga al trabajador por cada prenda de cada servicio)
+                      </span>
+                    </h3>
+                    <div className="space-y-2">
+                      {tarifasDestajo.length === 0 && (
+                        <div className="text-[11px] text-amber-700 bg-amber-500/10 border border-amber-500/20 rounded-md px-3 py-2">
+                          Agrega al menos una tarifa. Ejemplo: Corte S/ 0.20 · Remalle S/ 0.20 · Cerrado S/ 0.15
+                        </div>
+                      )}
+                      {tarifasDestajo.map((x, idx) => (
+                        <div key={idx} className="grid grid-cols-12 gap-2 items-center">
+                          <select value={x.servicio_nombre}
+                            onChange={e => actualizarTarifaDestajo(idx, 'servicio_nombre', e.target.value)}
+                            className="col-span-7 px-3 py-2 text-sm rounded-md border border-border bg-background"
+                            data-testid={`form-destajo-servicio-${idx}`}>
+                            <option value="">— Servicio —</option>
+                            {serviciosProd.map(s => (
+                              <option key={s.id || s.nombre} value={s.nombre}>{s.nombre}</option>
+                            ))}
+                          </select>
+                          <div className="col-span-4 relative">
+                            <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[11px] text-muted-foreground">S/</span>
+                            <input type="number" step="0.0001" min="0" placeholder="0.00"
+                              value={x.tarifa}
+                              onChange={e => actualizarTarifaDestajo(idx, 'tarifa', e.target.value)}
+                              className="w-full pl-7 pr-2 py-2 text-sm rounded-md border border-border bg-background font-mono"
+                              data-testid={`form-destajo-tarifa-${idx}`}/>
+                            <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] text-muted-foreground">/prenda</span>
+                          </div>
+                          <button type="button" onClick={() => eliminarTarifaDestajo(idx)}
+                            className="col-span-1 h-9 flex items-center justify-center rounded-md hover:bg-red-500/10 text-red-600">
+                            <Trash2 size={14}/>
+                          </button>
+                        </div>
+                      ))}
+                      <button type="button" onClick={agregarTarifaDestajo}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-dashed border-border hover:bg-muted">
+                        <Plus size={12}/> Agregar servicio
+                      </button>
+                    </div>
+                  </section>
+                )}
+
                 {/* Medios de pago por defecto */}
                 <section>
                   <h3 className="text-xs font-semibold uppercase text-muted-foreground mb-2 flex items-center gap-1.5">
                     <CreditCard size={13}/> Medios de pago por defecto <span className="text-[10px] text-muted-foreground/70 normal-case font-normal">(opcional, auto-cuadre en planilla)</span>
                   </h3>
+                  {(() => {
+                    // Filtrado: cuentas reales siempre + cuenta ficticia solo si corresponde a la unidad interna del trabajador
+                    const uiId = form.unidad_interna_id ? parseInt(form.unidad_interna_id) : null;
+                    const cuentasVisibles = cuentas.filter(c => {
+                      if (!c.es_ficticia) return true;
+                      return uiId && c.unidad_interna_id === uiId;
+                    });
+                    const cuentaUI = cuentasVisibles.find(c => c.es_ficticia);
+                    return (
                   <div className="space-y-2">
+                    {uiId && cuentaUI && (
+                      <div className="text-[11px] text-blue-700 bg-blue-500/5 border border-blue-500/20 rounded-md px-3 py-2 flex items-start gap-2">
+                        <CreditCard size={12} className="mt-0.5 shrink-0"/>
+                        <span>
+                          Como este trabajador pertenece a una unidad interna, también puedes asignar la cuenta interna{' '}
+                          <strong>{cuentaUI.nombre}</strong> para imputar el sueldo al P&amp;L de la unidad.
+                        </span>
+                      </div>
+                    )}
                     {medios.map((m, idx) => (
                       <div key={idx} className="grid grid-cols-12 gap-2 items-center">
                         <select value={m.cuenta_id}
                           onChange={e => actualizarMedio(idx, 'cuenta_id', e.target.value)}
                           className="col-span-8 px-3 py-2 text-sm rounded-md border border-border bg-background">
                           <option value="">— Cuenta —</option>
-                          {cuentas.map(c => (
-                            <option key={c.id} value={c.id}>{c.nombre}</option>
+                          {cuentasVisibles.map(c => (
+                            <option key={c.id} value={c.id}>
+                              {c.nombre}{c.es_ficticia ? ' (unidad interna)' : ''}
+                            </option>
                           ))}
                         </select>
                         <div className="col-span-3 relative">
@@ -486,6 +668,8 @@ export default function Trabajadores() {
                       </div>
                     )}
                   </div>
+                    );
+                  })()}
                 </section>
 
                 <section>

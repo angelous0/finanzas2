@@ -266,38 +266,220 @@ async def list_gastos_unidad_interna(
     fecha_hasta: Optional[date] = None,
     empresa_id: int = Depends(get_empresa_id),
 ):
+    """Lista consolidada de TODOS los gastos que afectan una unidad interna:
+      - directo     → registrados manualmente (fin_gasto_unidad_interna), editables
+      - factura     → líneas de factura de proveedor imputadas (cont_factura_proveedor_linea)
+      - planilla    → sueldos pagados desde la cuenta ficticia de la unidad
+      - adelanto    → adelantos pendientes pagados desde la cuenta ficticia
+
+    Solo los de origen 'directo' son editables/eliminables desde esta vista;
+    los demás son read-only y provienen de otros módulos.
+    """
+    from decimal import Decimal
+    def _to_native(d):
+        out = {}
+        for k, v in d.items():
+            if hasattr(v, 'isoformat'):
+                out[k] = v.isoformat()
+            elif isinstance(v, Decimal):
+                out[k] = float(v)
+            else:
+                out[k] = v
+        return out
+
     pool = await get_pool()
     async with pool.acquire() as conn:
         await conn.execute("SET search_path TO finanzas2, public")
-        conditions = ["g.empresa_id = $1"]
-        params = [empresa_id]
-        idx = 2
-        if unidad_interna_id:
-            conditions.append(f"g.unidad_interna_id = ${idx}")
-            params.append(unidad_interna_id); idx += 1
-        if fecha_desde:
-            conditions.append(f"g.fecha >= ${idx}")
-            params.append(fecha_desde); idx += 1
-        if fecha_hasta:
-            conditions.append(f"g.fecha <= ${idx}")
-            params.append(fecha_hasta); idx += 1
-        rows = await conn.fetch(f"""
-            SELECT g.*, u.nombre as unidad_nombre
-            FROM finanzas2.fin_gasto_unidad_interna g
-            LEFT JOIN finanzas2.fin_unidad_interna u ON g.unidad_interna_id = u.id
-            WHERE {' AND '.join(conditions)}
-            ORDER BY g.fecha DESC, g.id DESC
-        """, *params)
+
+        # Filtros comunes para cada fuente
+        def build_filter(fecha_field: str, unidad_field: str, start_idx: int = 2):
+            conds = ["empresa_id_field = $1".replace('empresa_id_field', f'{unidad_field.split(".")[0]}.empresa_id')]
+            params_loc = [empresa_id]
+            idx_loc = start_idx
+            if unidad_interna_id:
+                conds.append(f"{unidad_field} = ${idx_loc}")
+                params_loc.append(unidad_interna_id); idx_loc += 1
+            if fecha_desde:
+                conds.append(f"{fecha_field} >= ${idx_loc}")
+                params_loc.append(fecha_desde); idx_loc += 1
+            if fecha_hasta:
+                conds.append(f"{fecha_field} <= ${idx_loc}")
+                params_loc.append(fecha_hasta); idx_loc += 1
+            return conds, params_loc
+
         result = []
+
+        # ── 1) Gastos directos (fin_gasto_unidad_interna) ──
+        conds, params = build_filter('g.fecha', 'g.unidad_interna_id')
+        rows = await conn.fetch(f"""
+            SELECT g.id, g.fecha, g.unidad_interna_id, g.tipo_gasto, g.descripcion,
+                   g.monto, g.registro_id, g.movimiento_id,
+                   u.nombre AS unidad_nombre
+              FROM finanzas2.fin_gasto_unidad_interna g
+              LEFT JOIN finanzas2.fin_unidad_interna u ON g.unidad_interna_id = u.id
+             WHERE {' AND '.join(conds)}
+        """, *params)
         for r in rows:
-            d = dict(r)
-            for k in d:
-                if hasattr(d[k], 'isoformat'):
-                    d[k] = d[k].isoformat()
-                from decimal import Decimal
-                if isinstance(d[k], Decimal):
-                    d[k] = float(d[k])
+            d = _to_native(dict(r))
+            d['origen'] = 'directo'
+            d['editable'] = True
             result.append(d)
+
+        # ── 2) Líneas de factura de proveedor imputadas ──
+        conds_f = ['fpl.empresa_id = $1', "fp.tipo_documento != 'nota_interna'"]
+        params_f = [empresa_id]
+        idx_f = 2
+        if unidad_interna_id:
+            conds_f.append(f"fpl.unidad_interna_id = ${idx_f}")
+            params_f.append(unidad_interna_id); idx_f += 1
+        else:
+            conds_f.append("fpl.unidad_interna_id IS NOT NULL")
+        if fecha_desde:
+            conds_f.append(f"fp.fecha_factura >= ${idx_f}")
+            params_f.append(fecha_desde); idx_f += 1
+        if fecha_hasta:
+            conds_f.append(f"fp.fecha_factura <= ${idx_f}")
+            params_f.append(fecha_hasta); idx_f += 1
+        rows = await conn.fetch(f"""
+            SELECT fpl.id, fp.fecha_factura AS fecha, fpl.unidad_interna_id,
+                   fp.numero AS factura_numero, c.nombre AS categoria_nombre,
+                   fpl.descripcion, fpl.importe AS monto,
+                   u.nombre AS unidad_nombre
+              FROM finanzas2.cont_factura_proveedor_linea fpl
+              JOIN finanzas2.cont_factura_proveedor fp ON fp.id = fpl.factura_id
+              LEFT JOIN finanzas2.cont_categoria c ON c.id = fpl.categoria_id
+              LEFT JOIN finanzas2.fin_unidad_interna u ON fpl.unidad_interna_id = u.id
+             WHERE {' AND '.join(conds_f)}
+        """, *params_f)
+        for r in rows:
+            d = _to_native(dict(r))
+            d['id'] = f"fact-{d['id']}"
+            d['tipo_gasto'] = (d.pop('categoria_nombre') or 'FACTURA').upper()
+            d['descripcion'] = f"{d.pop('factura_numero')} — {d['descripcion'] or ''}".strip(" —")
+            d['origen'] = 'factura'
+            d['editable'] = False
+            result.append(d)
+
+        # ── 3) Planilla pagada desde cuenta ficticia de la unidad ──
+        conds_p = ['pp.empresa_id = $1', 'cf.es_ficticia = TRUE', 'cf.unidad_interna_id IS NOT NULL']
+        params_p = [empresa_id]
+        idx_p = 2
+        if unidad_interna_id:
+            conds_p.append(f"cf.unidad_interna_id = ${idx_p}")
+            params_p.append(unidad_interna_id); idx_p += 1
+        if fecha_desde:
+            conds_p.append(f"mt.fecha >= ${idx_p}")
+            params_p.append(fecha_desde); idx_p += 1
+        if fecha_hasta:
+            conds_p.append(f"mt.fecha <= ${idx_p}")
+            params_p.append(fecha_hasta); idx_p += 1
+        rows = await conn.fetch(f"""
+            SELECT pp.id, mt.fecha, cf.unidad_interna_id,
+                   pp.monto, pl.anio, pl.mes, pl.quincena,
+                   d.nombre AS trabajador_nombre,
+                   u.nombre AS unidad_nombre
+              FROM finanzas2.fin_planilla_quincena_pago pp
+              JOIN finanzas2.cont_movimiento_tesoreria mt ON mt.id = pp.movimiento_cuenta_id
+              JOIN finanzas2.cont_cuenta_financiera cf ON cf.id = pp.cuenta_id
+              JOIN finanzas2.fin_planilla_quincena pl ON pl.id = pp.planilla_id
+              LEFT JOIN finanzas2.fin_planilla_quincena_detalle d ON d.id = pp.detalle_id
+              LEFT JOIN finanzas2.fin_unidad_interna u ON cf.unidad_interna_id = u.id
+             WHERE {' AND '.join(conds_p)}
+        """, *params_p)
+        for r in rows:
+            d = _to_native(dict(r))
+            anio, mes, q = d.pop('anio'), d.pop('mes'), d.pop('quincena')
+            trabajador = d.pop('trabajador_nombre') or ''
+            d['id'] = f"pln-{d['id']}"
+            d['tipo_gasto'] = 'PLANILLA'
+            d['descripcion'] = f"Planilla {anio}-{int(mes):02d}-Q{q}" + (f" · {trabajador}" if trabajador else "")
+            d['origen'] = 'planilla'
+            d['editable'] = False
+            result.append(d)
+
+        # ── 4) Adelantos pendientes desde cuenta ficticia ──
+        conds_a = ['a.empresa_id = $1', 'cf.es_ficticia = TRUE', 'cf.unidad_interna_id IS NOT NULL',
+                   'a.descontado = FALSE']
+        params_a = [empresa_id]
+        idx_a = 2
+        if unidad_interna_id:
+            conds_a.append(f"cf.unidad_interna_id = ${idx_a}")
+            params_a.append(unidad_interna_id); idx_a += 1
+        if fecha_desde:
+            conds_a.append(f"mt.fecha >= ${idx_a}")
+            params_a.append(fecha_desde); idx_a += 1
+        if fecha_hasta:
+            conds_a.append(f"mt.fecha <= ${idx_a}")
+            params_a.append(fecha_hasta); idx_a += 1
+        rows = await conn.fetch(f"""
+            SELECT a.id, mt.fecha, cf.unidad_interna_id,
+                   a.monto, a.motivo,
+                   t.nombre AS trabajador_nombre,
+                   u.nombre AS unidad_nombre
+              FROM finanzas2.fin_adelanto_trabajador a
+              JOIN finanzas2.cont_movimiento_tesoreria mt ON mt.id = a.movimiento_cuenta_id
+              JOIN finanzas2.cont_cuenta_financiera cf ON cf.id = a.cuenta_pago_id
+              LEFT JOIN finanzas2.fin_trabajador t ON t.id = a.trabajador_id
+              LEFT JOIN finanzas2.fin_unidad_interna u ON cf.unidad_interna_id = u.id
+             WHERE {' AND '.join(conds_a)}
+        """, *params_a)
+        for r in rows:
+            d = _to_native(dict(r))
+            trabajador = d.pop('trabajador_nombre') or ''
+            motivo = d.pop('motivo') or ''
+            d['id'] = f"ade-{d['id']}"
+            d['tipo_gasto'] = 'ADELANTO'
+            d['descripcion'] = f"Adelanto" + (f" · {trabajador}" if trabajador else "") + (f" — {motivo}" if motivo else "")
+            d['origen'] = 'adelanto'
+            d['editable'] = False
+            result.append(d)
+
+        # ── 5) Planilla DESTAJO pagada desde cuenta ficticia ──
+        existe_destajo = await conn.fetchval("""
+            SELECT EXISTS (SELECT 1 FROM information_schema.tables
+                            WHERE table_schema='finanzas2'
+                              AND table_name='fin_planilla_destajo_pago')
+        """)
+        if existe_destajo:
+            conds_d = ['pdp.empresa_id = $1', 'cf.es_ficticia = TRUE', 'cf.unidad_interna_id IS NOT NULL']
+            params_d = [empresa_id]
+            idx_d = 2
+            if unidad_interna_id:
+                conds_d.append(f"cf.unidad_interna_id = ${idx_d}")
+                params_d.append(unidad_interna_id); idx_d += 1
+            if fecha_desde:
+                conds_d.append(f"mt.fecha >= ${idx_d}")
+                params_d.append(fecha_desde); idx_d += 1
+            if fecha_hasta:
+                conds_d.append(f"mt.fecha <= ${idx_d}")
+                params_d.append(fecha_hasta); idx_d += 1
+            rows = await conn.fetch(f"""
+                SELECT pdp.id, mt.fecha, cf.unidad_interna_id,
+                       pdp.monto, pld.fecha_desde, pld.fecha_hasta,
+                       d.nombre AS trabajador_nombre,
+                       u.nombre AS unidad_nombre
+                  FROM finanzas2.fin_planilla_destajo_pago pdp
+                  JOIN finanzas2.cont_movimiento_tesoreria mt ON mt.id = pdp.movimiento_cuenta_id
+                  JOIN finanzas2.cont_cuenta_financiera cf ON cf.id = pdp.cuenta_id
+                  JOIN finanzas2.fin_planilla_destajo pld ON pld.id = pdp.planilla_destajo_id
+                  LEFT JOIN finanzas2.fin_planilla_destajo_detalle d ON d.id = pdp.detalle_id
+                  LEFT JOIN finanzas2.fin_unidad_interna u ON cf.unidad_interna_id = u.id
+                 WHERE {' AND '.join(conds_d)}
+            """, *params_d)
+            for r in rows:
+                d = _to_native(dict(r))
+                trabajador = d.pop('trabajador_nombre') or ''
+                fd, fh = d.pop('fecha_desde'), d.pop('fecha_hasta')
+                rango = f"{fd} al {fh}" if fd and fh else "destajo"
+                d['id'] = f"pld-{d['id']}"
+                d['tipo_gasto'] = 'DESTAJO'
+                d['descripcion'] = f"Destajo {rango}" + (f" · {trabajador}" if trabajador else "")
+                d['origen'] = 'destajo'
+                d['editable'] = False
+                result.append(d)
+
+        # Ordenar por fecha DESC, con id como desempate estable
+        result.sort(key=lambda x: (x.get('fecha') or '', str(x.get('id'))), reverse=True)
         return result
 
 
@@ -429,29 +611,45 @@ async def reporte_unidades_internas(
         """, *params)
         gastos_cont_map = {r['unidad_interna_id']: float(r['total_gastos_cont']) for r in gastos_cont_agg}
 
-        # Fuente canónica de "gastos": EGRESOS en la cuenta ficticia (fin_movimiento_cuenta)
-        # Esta es la misma fuente que usa el Dashboard de Cuentas Internas, garantiza consistencia.
+        # Fuente canónica de "gastos" en cuentas ficticias: unión de dos fuentes
+        #   1) fin_movimiento_cuenta — tabla legacy usada por gastos-unidad-interna y dashboard
+        #   2) cont_movimiento_tesoreria — fuente única actual (planilla, adelantos, gastos, pagos)
+        # La unión evita fragmentación al migrar módulos hacia la tabla única.
         date_cond_mov = ""
+        date_cond_mt = ""
         params_mov = [empresa_id]
         idx_mov = 2
         if fecha_desde:
             date_cond_mov += f" AND mc.fecha >= ${idx_mov}"
+            date_cond_mt += f" AND mt.fecha >= ${idx_mov}"
             params_mov.append(fecha_desde); idx_mov += 1
         if fecha_hasta:
             date_cond_mov += f" AND mc.fecha <= ${idx_mov}"
+            date_cond_mt += f" AND mt.fecha <= ${idx_mov}"
             params_mov.append(fecha_hasta); idx_mov += 1
 
         egresos_cuenta_agg = await conn.fetch(f"""
-            SELECT cf.unidad_interna_id,
-                   COALESCE(SUM(mc.monto), 0) as total_egresos
-            FROM finanzas2.fin_movimiento_cuenta mc
-            JOIN finanzas2.cont_cuenta_financiera cf ON mc.cuenta_id = cf.id
-            WHERE mc.empresa_id = $1
-              AND mc.tipo = 'EGRESO'
-              AND cf.es_ficticia = true
-              AND cf.unidad_interna_id IS NOT NULL
-              {date_cond_mov}
-            GROUP BY cf.unidad_interna_id
+            SELECT unidad_interna_id, COALESCE(SUM(monto), 0) AS total_egresos
+              FROM (
+                SELECT cf.unidad_interna_id, mc.monto
+                  FROM finanzas2.fin_movimiento_cuenta mc
+                  JOIN finanzas2.cont_cuenta_financiera cf ON mc.cuenta_id = cf.id
+                 WHERE mc.empresa_id = $1
+                   AND mc.tipo = 'EGRESO'
+                   AND cf.es_ficticia = true
+                   AND cf.unidad_interna_id IS NOT NULL
+                   {date_cond_mov}
+                UNION ALL
+                SELECT cf.unidad_interna_id, mt.monto
+                  FROM finanzas2.cont_movimiento_tesoreria mt
+                  JOIN finanzas2.cont_cuenta_financiera cf ON mt.cuenta_financiera_id = cf.id
+                 WHERE mt.empresa_id = $1
+                   AND LOWER(mt.tipo) = 'egreso'
+                   AND cf.es_ficticia = true
+                   AND cf.unidad_interna_id IS NOT NULL
+                   {date_cond_mt}
+              ) u
+             GROUP BY unidad_interna_id
         """, *params_mov)
         egresos_cuenta_map = {r['unidad_interna_id']: float(r['total_egresos']) for r in egresos_cuenta_agg}
 
@@ -735,6 +933,120 @@ async def reporte_pnl_unidad(
                 "monto": float(g["importe"] or 0),
                 "origen": "factura",
             })
+
+        # Pagos de planilla imputados a la cuenta ficticia de la unidad
+        # (el trabajador se pagó desde la "Cuenta Corte Interno" → es costo de Corte)
+        if cuenta:
+            cond_fecha_pln = ""
+            params_pln = [cuenta['id'], empresa_id]
+            idx_pln = 3
+            if fecha_desde:
+                cond_fecha_pln += f" AND mt.fecha >= ${idx_pln}"
+                params_pln.append(fecha_desde); idx_pln += 1
+            if fecha_hasta:
+                cond_fecha_pln += f" AND mt.fecha <= ${idx_pln}"
+                params_pln.append(fecha_hasta); idx_pln += 1
+
+            # Planilla — una línea por cada medio de pago
+            pagos_planilla = await conn.fetch(
+                f"""
+                SELECT pp.id, mt.fecha, mt.monto, mt.concepto, mt.referencia,
+                       pl.anio, pl.mes, pl.quincena,
+                       d.nombre AS trabajador_nombre
+                  FROM finanzas2.fin_planilla_quincena_pago pp
+                  JOIN finanzas2.cont_movimiento_tesoreria mt ON mt.id = pp.movimiento_cuenta_id
+                  JOIN finanzas2.fin_planilla_quincena pl ON pl.id = pp.planilla_id
+                  LEFT JOIN finanzas2.fin_planilla_quincena_detalle d ON d.id = pp.detalle_id
+                 WHERE pp.cuenta_id = $1 AND pp.empresa_id = $2
+                   {cond_fecha_pln}
+                 ORDER BY mt.fecha DESC, pp.id DESC
+                """,
+                *params_pln,
+            )
+            for p in pagos_planilla:
+                periodo = f"{p['anio']}-{p['mes']:02d}-Q{p['quincena']}"
+                concepto = (
+                    f"Planilla {periodo}"
+                    + (f" · {p['trabajador_nombre']}" if p['trabajador_nombre'] else "")
+                )
+                gastos_items.append({
+                    "gasto_id": f"pln-{p['id']}",
+                    "fecha": p['fecha'].isoformat() if p['fecha'] else None,
+                    "categoria": "Planilla / Sueldos",
+                    "concepto": concepto,
+                    "monto": float(p['monto'] or 0),
+                    "origen": "planilla",
+                })
+
+            # Planilla DESTAJO — pagos a destajistas desde la cuenta ficticia
+            # (Roger destajo de Corte Interno, Juan remalle, etc.)
+            existe_destajo = await conn.fetchval("""
+                SELECT EXISTS (SELECT 1 FROM information_schema.tables
+                                WHERE table_schema='finanzas2'
+                                  AND table_name='fin_planilla_destajo_pago')
+            """)
+            if existe_destajo:
+                pagos_destajo = await conn.fetch(
+                    f"""
+                    SELECT pdp.id, mt.fecha, mt.monto, mt.concepto, mt.referencia,
+                           pld.fecha_desde, pld.fecha_hasta,
+                           d.nombre AS trabajador_nombre
+                      FROM finanzas2.fin_planilla_destajo_pago pdp
+                      JOIN finanzas2.cont_movimiento_tesoreria mt ON mt.id = pdp.movimiento_cuenta_id
+                      JOIN finanzas2.fin_planilla_destajo pld ON pld.id = pdp.planilla_destajo_id
+                      LEFT JOIN finanzas2.fin_planilla_destajo_detalle d ON d.id = pdp.detalle_id
+                     WHERE pdp.cuenta_id = $1 AND pdp.empresa_id = $2
+                       {cond_fecha_pln}
+                     ORDER BY mt.fecha DESC, pdp.id DESC
+                    """,
+                    *params_pln,
+                )
+                for p in pagos_destajo:
+                    rango = f"{p['fecha_desde']} al {p['fecha_hasta']}" if p['fecha_desde'] else "destajo"
+                    concepto = (
+                        f"Destajo {rango}"
+                        + (f" · {p['trabajador_nombre']}" if p['trabajador_nombre'] else "")
+                    )
+                    gastos_items.append({
+                        "gasto_id": f"pld-{p['id']}",
+                        "fecha": p['fecha'].isoformat() if p['fecha'] else None,
+                        "categoria": "Planilla / Destajo",
+                        "concepto": concepto,
+                        "monto": float(p['monto'] or 0),
+                        "origen": "destajo",
+                    })
+
+            # Adelantos a trabajadores pagados desde la cuenta ficticia
+            adelantos_unidad = await conn.fetch(
+                f"""
+                SELECT a.id, mt.fecha, mt.monto, a.motivo,
+                       t.nombre AS trabajador_nombre
+                  FROM finanzas2.fin_adelanto_trabajador a
+                  JOIN finanzas2.cont_movimiento_tesoreria mt ON mt.id = a.movimiento_cuenta_id
+                  LEFT JOIN finanzas2.fin_trabajador t ON t.id = a.trabajador_id
+                 WHERE a.cuenta_pago_id = $1 AND a.empresa_id = $2
+                   AND a.descontado = FALSE
+                   {cond_fecha_pln}
+                 ORDER BY mt.fecha DESC, a.id DESC
+                """,
+                *params_pln,
+            )
+            # Solo incluimos adelantos NO descontados: los descontados ya redujeron
+            # el neto de una planilla y ese pago ya está contado arriba.
+            for a in adelantos_unidad:
+                concepto = (
+                    f"Adelanto"
+                    + (f" · {a['trabajador_nombre']}" if a['trabajador_nombre'] else "")
+                    + (f" — {a['motivo']}" if a['motivo'] else "")
+                )
+                gastos_items.append({
+                    "gasto_id": f"ade-{a['id']}",
+                    "fecha": a['fecha'].isoformat() if a['fecha'] else None,
+                    "categoria": "Adelantos (pendientes)",
+                    "concepto": concepto,
+                    "monto": float(a['monto'] or 0),
+                    "origen": "adelanto",
+                })
 
         gastos_items.sort(key=lambda x: x["fecha"] or "", reverse=True)
         total_gastos = sum(g["monto"] for g in gastos_items)

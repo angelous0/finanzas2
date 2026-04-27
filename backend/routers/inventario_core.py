@@ -20,6 +20,9 @@ async def list_inventario(search: Optional[str] = None, empresa_id: int = Depend
     async with pool.acquire() as conn:
         try:
             search_param = f"%{search}%" if search else None
+            # LIMIT alto para no truncar el catálogo cuando se carga sin búsqueda
+            # (FacturasProveedor / OrdenesCompra cargan todo el inventario al inicio
+            # y luego filtran client-side en el TableSearchSelect).
             rows = await conn.fetch("""
                 SELECT id, codigo, nombre, descripcion, categoria, unidad_medida,
                        COALESCE(stock_actual, 0) as stock_actual,
@@ -29,7 +32,8 @@ async def list_inventario(search: Optional[str] = None, empresa_id: int = Depend
                        modelo, marca, activo, linea_negocio_id
                 FROM produccion.prod_inventario
                 WHERE ($1::text IS NULL OR nombre ILIKE $1 OR codigo ILIKE $1 OR descripcion ILIKE $1)
-                ORDER BY nombre LIMIT 200
+                  AND COALESCE(activo, true) = true
+                ORDER BY nombre LIMIT 5000
             """, search_param)
             return [dict(r) for r in rows]
         except Exception as e:
