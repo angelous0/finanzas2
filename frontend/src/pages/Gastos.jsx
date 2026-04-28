@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { Plus, FileText, Trash2, Eye, X, DollarSign, Download, Printer, Pencil, Search, SlidersHorizontal } from 'lucide-react';
+import { Plus, FileText, Trash2, Eye, X, DollarSign, Download, Printer, Pencil, Search, SlidersHorizontal, Upload } from 'lucide-react';
+import ImportExcelModal from '../components/ImportExcelModal';
 import { toast } from 'sonner';
 import {
   getGastos,
@@ -9,6 +10,8 @@ import {
   deleteGasto,
   deleteGastoPago,
   getNextOtroCorrelativo,
+  downloadGastoTemplate,
+  importGastosExcel,
   getProveedores,
   getMonedas,
   getCategorias,
@@ -102,6 +105,9 @@ export default function Gastos() {
   });
   const [fechaContableManual, setFechaContableManual] = useState(false);
   const [showSunat, setShowSunat] = useState(false);
+
+  // Importar Excel
+  const [showImportModal, setShowImportModal] = useState(false);
 
   // Quick-create proveedor
   const [showQuickProv, setShowQuickProv] = useState(false);
@@ -638,14 +644,25 @@ export default function Gastos() {
           <h1 className="page-title">Gastos</h1>
           <p className="page-subtitle">Total: {formatCurrency(totalGastos)}</p>
         </div>
-        <button 
-          className="btn btn-primary"
-          onClick={() => { resetForm(); setEditingGastoId(null); setShowModal(true); }}
-          data-testid="nuevo-gasto-btn"
-        >
-          <Plus size={18} />
-          Nuevo Gasto
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button
+            className="btn btn-outline"
+            onClick={() => setShowImportModal(true)}
+            title="Carga masiva desde Excel"
+            data-testid="importar-gastos-btn"
+          >
+            <Upload size={16} />
+            Importar Excel
+          </button>
+          <button
+            className="btn btn-primary"
+            onClick={() => { resetForm(); setEditingGastoId(null); setShowModal(true); }}
+            data-testid="nuevo-gasto-btn"
+          >
+            <Plus size={18} />
+            Nuevo Gasto
+          </button>
+        </div>
       </div>
 
       <div className="page-content">
@@ -1502,6 +1519,17 @@ export default function Gastos() {
       )}
 
       {/* Quick-create Proveedor modal */}
+      {/* Importar Excel modal */}
+      <ImportExcelModal
+        show={showImportModal}
+        title="Importar gastos desde Excel"
+        onClose={() => setShowImportModal(false)}
+        onImported={() => loadData()}
+        downloadTemplate={downloadGastoTemplate}
+        importFile={importGastosExcel}
+        templateFilename="plantilla_gastos.xlsx"
+      />
+
       {showQuickProv && (
         <div className="modal-overlay" onClick={() => setShowQuickProv(false)} style={{ zIndex: 1100 }}>
           <div className="modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '420px' }}>

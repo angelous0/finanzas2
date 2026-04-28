@@ -131,6 +131,30 @@ export const getGastos = (params) => api.get('/gastos', { params });
 export const getGasto = (id) => api.get(`/gastos/${id}`);
 export const createGasto = (data) => api.post('/gastos', data);
 export const getNextOtroCorrelativo = (fecha) => api.get('/gastos/next-otro-correlativo', { params: { fecha } });
+
+// Carga masiva (Excel)
+export const downloadGastoTemplate = () => api.get('/gastos/template-excel', { responseType: 'blob' });
+export const importGastosExcel = (file) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return api.post('/gastos/import-excel', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+};
+export const downloadFacturaTemplate = () => api.get('/facturas-proveedor/template-excel', { responseType: 'blob' });
+export const importFacturasExcel = (file) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return api.post('/facturas-proveedor/import-excel', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+};
+
+// Extracción automática de factura (foto, PDF, XML SUNAT)
+const _uploadFile = (url, file) => {
+  const fd = new FormData();
+  fd.append('file', file);
+  return api.post(url, fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+};
+export const extractFacturaFromImage = (file) => _uploadFile('/facturas-proveedor/extract-from-image', file);
+export const extractFacturaFromPDF   = (file) => _uploadFile('/facturas-proveedor/extract-from-pdf', file);
+export const extractFacturaFromXML   = (file) => _uploadFile('/facturas-proveedor/extract-from-xml', file);
 export const updateGasto = (id, data) => api.put(`/gastos/${id}`, data);
 export const deleteGasto = (id) => api.delete(`/gastos/${id}`);
 export const deleteGastoPago = (gastoId, pagoId) => api.delete(`/gastos/${gastoId}/pagos/${pagoId}`);

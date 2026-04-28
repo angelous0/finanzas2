@@ -8,7 +8,7 @@ import TableSearchSelect from '../../components/TableSearchSelect';
 import CategoriaSelect from '../../components/CategoriaSelect';
 
 const FacturaFormModal = ({
-  show, editingFactura, readOnly, proveedores, monedas, categorias, lineasNegocio,
+  show, editingFactura, extractedData, readOnly, proveedores, monedas, categorias, lineasNegocio,
   centrosCosto, inventario, modelosCortes, serviciosProduccion = [], unidadesInternas = [], valorizacionMap,
   onClose, onSaved, onProveedorCreated,
   onOpenPago, onDownloadPDF, onVincularIngresos, onVerPagos, onOpenLetras, onVerLetras
@@ -49,10 +49,12 @@ const FacturaFormModal = ({
     if (!show) return;
     if (editingFactura) {
       populateFromFactura(editingFactura);
+    } else if (extractedData) {
+      populateFromExtraction(extractedData);
     } else {
       resetForm();
     }
-  }, [show, editingFactura]);
+  }, [show, editingFactura, extractedData]);
 
   // Calculate fecha_vencimiento when fecha_factura or terminos change
   useEffect(() => {
@@ -71,6 +73,54 @@ const FacturaFormModal = ({
     const pen = monedas.find(m => m.codigo === 'PEN');
     setFormData(getEmptyFormData(pen?.id || ''));
     setFechaContableManual(false);
+  };
+
+  // Pre-llenar el formulario desde datos extraídos (foto/PDF/XML)
+  const populateFromExtraction = (data) => {
+    if (!data) return;
+    const pen = monedas.find(m => m.codigo === 'PEN');
+    const usd = monedas.find(m => m.codigo === 'USD');
+    const monedaCodigo = (data.moneda_codigo || 'PEN').toUpperCase();
+    const monedaId = data.moneda_id || (monedaCodigo === 'USD' ? usd?.id : pen?.id) || pen?.id || '';
+
+    const lineas = (data.lineas || []).map(l => ({
+      categoria_id: '',
+      descripcion: l.descripcion || '',
+      linea_negocio_id: '',
+      centro_costo_id: '',
+      unidad_interna_id: '',
+      importe: parseFloat(l.importe) || 0,
+      igv_aplica: l.igv_aplica !== false,
+      movimiento_id: '',
+    }));
+
+    setFormData({
+      proveedor_id: data.proveedor?.id || '',
+      beneficiario_nombre: data.proveedor?.id ? '' : (data.proveedor?.nombre || ''),
+      moneda_id: monedaId,
+      tipo_cambio: data.tipo_cambio || '',
+      fecha_factura: data.fecha_factura || new Date().toISOString().split('T')[0],
+      fecha_contable: data.fecha_factura || new Date().toISOString().split('T')[0],
+      fecha_vencimiento: data.fecha_vencimiento || '',
+      terminos_dias: data.terminos_dias || 30,
+      tipo_documento: data.tipo_documento || 'factura',
+      numero: data.numero || '',
+      impuestos_incluidos: data.totales?.impuestos_incluidos !== false,
+      tipo_comprobante_sunat: data.tipo_comprobante_sunat || '',
+      base_gravada: data.totales?.base_gravada || 0,
+      igv_sunat: data.totales?.igv || 0,
+      base_no_gravada: data.totales?.base_no_gravada || 0,
+      isc: 0,
+      notas: data.notas || '',
+      lineas: lineas.length ? lineas : [getEmptyLinea()],
+      articulos: [],
+    });
+    setFechaContableManual(false);
+
+    // Avisar si el proveedor no se encontró
+    if (data.proveedor?.match === 'no_encontrado' && data.proveedor?.nombre) {
+      toast.info(`Proveedor "${data.proveedor.nombre}" no existe — se cargó como beneficiario. Crea el proveedor con el botón "Crear proveedor" si lo deseas.`);
+    }
   };
 
   const populateFromFactura = (factura) => {
@@ -523,6 +573,7 @@ const FacturaFormModal = ({
                 <select className="form-input form-select" value={formData.tipo_documento} onChange={(e) => setFormData(prev => ({ ...prev, tipo_documento: e.target.value }))} disabled={isLocked} style={isLocked ? lockedStyle : undefined}>
                   <option value="factura">Factura</option>
                   <option value="boleta">Boleta</option>
+                  <option value="ticket">Ticket</option>
                   <option value="recibo">Recibo por Honorarios</option>
                   <option value="nota_credito">Nota de Credito</option>
                   <option value="nota_interna">Nota Interna (producción propia)</option>

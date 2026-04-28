@@ -17,11 +17,14 @@ import {
   getFacturasProveedor, deleteFacturaProveedor,
   getProveedores, getMonedas, getCategorias, getLineasNegocio, getCentrosCosto,
   getInventario, getModelosCortes, getCuentasFinancieras,
-  getServiciosProduccion, getValorizacionInventario, getUnidadesInternas
+  getServiciosProduccion, getValorizacionInventario, getUnidadesInternas,
+  downloadFacturaTemplate, importFacturasExcel
 } from '../services/api';
 import { useEmpresa } from '../context/EmpresaContext';
-import { Plus, FileSpreadsheet } from 'lucide-react';
+import { Plus, FileSpreadsheet, Upload, Sparkles } from 'lucide-react';
 import { toast } from 'sonner';
+import ImportExcelModal from '../components/ImportExcelModal';
+import ExtractFacturaModal from './facturasProveedor/ExtractFacturaModal';
 
 import { formatCurrency, generatePDFAndPrint } from './facturasProveedor/helpers';
 import FacturasTable from './facturasProveedor/FacturasTable';
@@ -71,6 +74,9 @@ export const FacturasProveedor = () => {
   const [showVerLetrasModal, setShowVerLetrasModal] = useState(false);
   const [facturaParaVerLetras, setFacturaParaVerLetras] = useState(null);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [showImportModal, setShowImportModal] = useState(false);
+  const [showExtractModal, setShowExtractModal] = useState(false);
+  const [extractedData, setExtractedData] = useState(null);
   const [showProveedorModal, setShowProveedorModal] = useState(false);
   const [showVincularModal, setShowVincularModal] = useState(false);
   const [facturaParaVincular, setFacturaParaVincular] = useState(null);
@@ -155,7 +161,15 @@ export const FacturasProveedor = () => {
     setShowFormModal(true);
   };
 
-  const handleNewFactura = () => { setEditingFactura(null); setViewOnlyMode(false); setShowFormModal(true); };
+  const handleNewFactura = () => { setEditingFactura(null); setExtractedData(null); setViewOnlyMode(false); setShowFormModal(true); };
+
+  // Abrir el form pre-llenado con datos extraídos por IA / XML SUNAT
+  const handleExtracted = (data) => {
+    setEditingFactura(null);
+    setExtractedData(data);
+    setViewOnlyMode(false);
+    setShowFormModal(true);
+  };
 
   // Calculate totals for header
   const facturasFiltradas = filtroNumero
@@ -174,6 +188,12 @@ export const FacturasProveedor = () => {
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button className="btn btn-outline" onClick={() => setShowExportModal(true)} data-testid="export-compraapp-btn" title="Exportar CompraAPP">
             <FileSpreadsheet size={18} /> CompraAPP
+          </button>
+          <button className="btn btn-outline" onClick={() => setShowImportModal(true)} data-testid="importar-facturas-btn" title="Carga masiva desde Excel">
+            <Upload size={16} /> Importar Excel
+          </button>
+          <button className="btn btn-outline" onClick={() => setShowExtractModal(true)} data-testid="extract-factura-btn" title="Cargar desde foto/PDF/XML SUNAT con IA">
+            <Sparkles size={16} /> Cargar c/ IA
           </button>
           <button className="btn btn-primary" onClick={handleNewFactura} data-testid="nueva-factura-btn">
             <Plus size={18} /> Nueva Factura
@@ -208,6 +228,7 @@ export const FacturasProveedor = () => {
       <FacturaFormModal
         show={showFormModal}
         editingFactura={editingFactura}
+        extractedData={extractedData}
         readOnly={viewOnlyMode}
         proveedores={proveedores}
         monedas={monedas}
@@ -219,7 +240,7 @@ export const FacturasProveedor = () => {
         serviciosProduccion={serviciosProduccion}
         unidadesInternas={unidadesInternas}
         valorizacionMap={valorizacionMap}
-        onClose={() => { setShowFormModal(false); setEditingFactura(null); setViewOnlyMode(false); }}
+        onClose={() => { setShowFormModal(false); setEditingFactura(null); setExtractedData(null); setViewOnlyMode(false); }}
         onSaved={loadData}
         onProveedorCreated={(newProv) => setProveedores(prev => [...prev, newProv])}
         onOpenPago={(f) => { setFacturaParaPago(f); setShowPagoModal(true); }}
@@ -261,6 +282,22 @@ export const FacturasProveedor = () => {
       />
 
       <ExportModal show={showExportModal} onClose={() => setShowExportModal(false)} />
+
+      <ImportExcelModal
+        show={showImportModal}
+        title="Importar facturas desde Excel"
+        onClose={() => setShowImportModal(false)}
+        onImported={() => loadData()}
+        downloadTemplate={downloadFacturaTemplate}
+        importFile={importFacturasExcel}
+        templateFilename="plantilla_facturas.xlsx"
+      />
+
+      <ExtractFacturaModal
+        show={showExtractModal}
+        onClose={() => setShowExtractModal(false)}
+        onExtracted={handleExtracted}
+      />
 
       <ProveedorModal
         show={showProveedorModal}

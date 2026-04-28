@@ -19,6 +19,8 @@ from routers.inventario_core import router as inventario_core_router
 from routers.compras import router as compras_router
 from routers.pagos import router as pagos_router
 from routers.gastos import router as gastos_router
+from routers.import_excel import router as import_excel_router
+from routers.factura_extract import router as factura_extract_router
 from routers.ventas_pos import router as ventas_pos_router
 from routers.cxc_cxp import router as cxc_cxp_router
 from routers.banco import router as banco_router
@@ -82,6 +84,8 @@ api_router.include_router(maestros_router)
 api_router.include_router(cuentas_financieras_router)
 api_router.include_router(terceros_router)
 api_router.include_router(inventario_core_router)
+api_router.include_router(import_excel_router)  # ANTES de gastos/compras para que rutas estáticas tengan prioridad
+api_router.include_router(factura_extract_router)  # rutas estáticas /facturas-proveedor/extract-* antes que /facturas-proveedor/{id}
 api_router.include_router(compras_router)
 api_router.include_router(pagos_router)
 api_router.include_router(gastos_router)
