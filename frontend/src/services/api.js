@@ -155,6 +155,12 @@ const _uploadFile = (url, file) => {
 export const extractFacturaFromImage = (file) => _uploadFile('/facturas-proveedor/extract-from-image', file);
 export const extractFacturaFromPDF   = (file) => _uploadFile('/facturas-proveedor/extract-from-pdf', file);
 export const extractFacturaFromXML   = (file) => _uploadFile('/facturas-proveedor/extract-from-xml', file);
+
+// Configuración de IA (OpenAI)
+export const getConfigIA  = () => api.get('/config-ia');
+export const saveConfigIA = (data) => api.put('/config-ia', data);
+export const testConfigIA = () => api.post('/config-ia/test');
+export const getUsageIA   = () => api.get('/config-ia/usage');
 export const updateGasto = (id, data) => api.put(`/gastos/${id}`, data);
 export const deleteGasto = (id) => api.delete(`/gastos/${id}`);
 export const deleteGastoPago = (gastoId, pagoId) => api.delete(`/gastos/${gastoId}/pagos/${pagoId}`);

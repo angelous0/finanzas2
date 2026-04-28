@@ -32,6 +32,7 @@ import LineasNegocio from './pages/LineasNegocio';
 import CentrosCosto from './pages/CentrosCosto';
 import Marcas from './pages/Marcas';
 import Empresas from './pages/Empresas';
+import ConfigIA from './pages/ConfigIA';
 
 // === REVISAR Pages (pendiente decisión Fase 2) ===
 import OrdenesCompra from './pages/OrdenesCompra';
@@ -139,6 +140,7 @@ function AppRoutes() {
         <Route path="/centros-costo" element={<CentrosCosto />} />
         <Route path="/categorias-gasto" element={<CategoriasGasto />} />
         <Route path="/empresas" element={<Empresas />} />
+        <Route path="/config-ia" element={<ConfigIA />} />
 
         {/* === REVISAR — pendiente decisión Fase 2 === */}
         <Route path="/ordenes-compra" element={<OrdenesCompra />} />

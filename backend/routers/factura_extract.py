@@ -23,12 +23,10 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 
 from database import get_pool
 from dependencies import get_empresa_id
+from routers.config_ia import get_active_openai_key_and_model
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-OPENAI_MODEL = os.environ.get("OPENAI_VISION_MODEL", "gpt-4o-mini")
 
 
 # ─────────── Prompt para OpenAI Vision ───────────
@@ -89,18 +87,56 @@ def _image_to_base64(image_bytes: bytes, mime: str) -> str:
     return f"data:{mime};base64,{b64}"
 
 
-async def _extract_with_openai(image_data_url: str) -> dict:
-    """Llama a OpenAI Vision y devuelve el JSON extraído."""
-    if not OPENAI_API_KEY:
-        raise HTTPException(500, "OPENAI_API_KEY no configurada en el servidor")
+# Precios OpenAI (por 1M tokens) — actualizar si cambia tarifa
+PRECIOS_USD = {
+    "gpt-4o-mini": {"input": 0.150, "output": 0.600},
+    "gpt-4o":      {"input": 2.500, "output": 10.000},
+}
+
+
+def _calcular_costo(model: str, tokens_in: int, tokens_out: int) -> float:
+    p = PRECIOS_USD.get(model, PRECIOS_USD["gpt-4o-mini"])
+    return round((tokens_in / 1_000_000) * p["input"] + (tokens_out / 1_000_000) * p["output"], 6)
+
+
+async def _registrar_uso(model: str, fuente: str, tokens_in: int, tokens_out: int, ok: bool, error: str = None, empresa_id: int = None):
+    """Guarda el uso de la API en cont_uso_ia para tracking."""
+    try:
+        costo = _calcular_costo(model, tokens_in, tokens_out)
+        pool = await get_pool()
+        async with pool.acquire() as conn:
+            await conn.execute("""
+                INSERT INTO finanzas2.cont_uso_ia
+                  (modelo, tokens_input, tokens_output, costo_usd, fuente, ok, error, empresa_id)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+            """, model, tokens_in, tokens_out, costo, fuente, ok, error, empresa_id)
+    except Exception as e:
+        logger.warning(f"No se pudo registrar uso de IA: {e}")
+
+
+async def _extract_with_openai(image_data_url: str, fuente: str = "image", empresa_id: int = None) -> dict:
+    """Llama a OpenAI Vision y devuelve el JSON extraído.
+
+    La API key y modelo se resuelven en este orden:
+      1. cont_config_ia (BD)  ← configurable desde el frontend
+      2. OPENAI_API_KEY del .env (fallback)
+
+    Registra el uso en cont_uso_ia (tokens, costo) para tracking.
+    """
+    api_key, model = await get_active_openai_key_and_model()
+    if not api_key:
+        raise HTTPException(
+            400,
+            "No hay API key de OpenAI configurada. Ve a Configuración → IA y pega tu API key."
+        )
     try:
         from openai import OpenAI
     except ImportError:
         raise HTTPException(500, "Librería openai no instalada")
-    client = OpenAI(api_key=OPENAI_API_KEY)
+    client = OpenAI(api_key=api_key)
     try:
         resp = client.chat.completions.create(
-            model=OPENAI_MODEL,
+            model=model,
             messages=[{
                 "role": "user",
                 "content": [
@@ -112,9 +148,16 @@ async def _extract_with_openai(image_data_url: str) -> dict:
             temperature=0.1,
             response_format={"type": "json_object"},
         )
+        # Registrar uso (tokens del response)
+        usage = getattr(resp, "usage", None)
+        tokens_in = getattr(usage, "prompt_tokens", 0) if usage else 0
+        tokens_out = getattr(usage, "completion_tokens", 0) if usage else 0
+        await _registrar_uso(model, fuente, tokens_in, tokens_out, True, None, empresa_id)
+
         content = resp.choices[0].message.content
         return json.loads(content)
     except Exception as e:
+        await _registrar_uso(model, fuente, 0, 0, False, str(e)[:500], empresa_id)
         logger.exception("Error en OpenAI Vision")
         raise HTTPException(500, f"Error procesando con OpenAI: {e}")
 
@@ -203,7 +246,7 @@ async def extract_from_image(
     if len(contents) > 10 * 1024 * 1024:
         raise HTTPException(400, "Imagen demasiado grande (máx 10MB)")
     data_url = _image_to_base64(contents, file.content_type)
-    extraccion = await _extract_with_openai(data_url)
+    extraccion = await _extract_with_openai(data_url, fuente="image", empresa_id=empresa_id)
     extraccion = await _enriquecer_con_bd(extraccion, empresa_id)
     return {"ok": True, "fuente": "image", "data": extraccion}
 
@@ -220,7 +263,7 @@ async def extract_from_pdf(
     if len(contents) > 20 * 1024 * 1024:
         raise HTTPException(400, "PDF demasiado grande (máx 20MB)")
     data_url = _pdf_to_image_data_url(contents)
-    extraccion = await _extract_with_openai(data_url)
+    extraccion = await _extract_with_openai(data_url, fuente="pdf", empresa_id=empresa_id)
     extraccion = await _enriquecer_con_bd(extraccion, empresa_id)
     return {"ok": True, "fuente": "pdf", "data": extraccion}
 

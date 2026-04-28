@@ -9,7 +9,7 @@ import {
   Vault, Layers, Link2, History, BookOpen, PieChart,
   Factory, ArrowRightLeft, FileText, BarChart3, ClipboardList,
   TrendingUp, Menu, ChevronsLeft, ChevronsRight, Settings,
-  Scissors
+  Scissors, Sparkles
 } from 'lucide-react';
 import { useEmpresa } from '../context/EmpresaContext';
 
@@ -105,6 +105,7 @@ const navSections = [
       { icon: Tags, label: 'Categorias', path: '/categorias-gasto' },
       { icon: Users, label: 'Proveedores', path: '/proveedores' },
       { icon: Building2, label: 'Empresas', path: '/empresas' },
+      { icon: Sparkles, label: 'Configuración IA', path: '/config-ia' },
     ]
   },
 ];
