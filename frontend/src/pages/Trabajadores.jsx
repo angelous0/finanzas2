@@ -3,7 +3,8 @@ import { Plus, Pencil, Trash2, X, Users, Calculator, Check, ChevronDown, Chevron
 import { toast } from 'sonner';
 import {
   getTrabajadores, createTrabajador, updateTrabajador, deleteTrabajador,
-  previewCalculosTrabajador, getAfps, getUnidadesInternas, getAjustesPlanilla,
+  previewCalculosTrabajador, calcInversaTrabajador,
+  getAfps, getUnidadesInternas, getAjustesPlanilla,
   getCuentasFinancieras, getMediosPagoTrabajador, setMediosPagoTrabajador,
   getTarifasDestajoTrabajador, setTarifasDestajoTrabajador,
   getPersonasProduccionDisponibles, getServiciosProduccion,
@@ -25,6 +26,8 @@ const emptyForm = {
   unidad_interna_id: '',
   sueldo_planilla: 0, sueldo_basico: 0,
   horas_quincenales: 120,
+  horas_extras_25_default: 0,
+  horas_extras_35_default: 0,
   asignacion_familiar: false,
   porcentaje_planilla: 100,
   afp_id: '',
@@ -50,6 +53,32 @@ export default function Trabajadores() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [showSueldoDetalle, setShowSueldoDetalle] = useState(false);
+  // Calculadora inversa: ingresa sueldo objetivo + horas → calcula básico
+  const [sueldoObjetivo, setSueldoObjetivo] = useState('');
+  const [calculandoInversa, setCalculandoInversa] = useState(false);
+
+  const handleAutoCalcularBasico = async () => {
+    const obj = parseFloat(sueldoObjetivo);
+    if (!obj || obj <= 0) { toast.error('Ingresa el sueldo objetivo'); return; }
+    setCalculandoInversa(true);
+    try {
+      const r = await calcInversaTrabajador({
+        sueldo_objetivo: obj,
+        horas_quincenales: parseInt(form.horas_quincenales) || 120,
+        horas_extras_25: parseFloat(form.horas_extras_25_default) || 0,
+        horas_extras_35: parseFloat(form.horas_extras_35_default) || 0,
+      });
+      // Si tiene desglose abierto, lo pone todo en sueldo_basico (complemento) y deja planilla en 0
+      setForm(prev => ({
+        ...prev,
+        sueldo_planilla: 0,
+        sueldo_basico: r.data.sueldo_basico_total,
+      }));
+      toast.success(`Sueldo básico = S/ ${r.data.sueldo_basico_total.toFixed(2)} (total mensual S/ ${r.data.sueldo_total_calculado.toFixed(2)})`);
+    } catch (e) {
+      toast.error('Error en el cálculo');
+    } finally { setCalculandoInversa(false); }
+  };
   const [calculos, setCalculos] = useState(null);
   const [saving, setSaving] = useState(false);
   const [medios, setMedios] = useState([]);  // Medios de pago default del trabajador
@@ -64,12 +93,13 @@ export default function Trabajadores() {
       const params = {};
       if (filtroArea) params.area = filtroArea;
       if (filtroActivo !== null) params.activo = filtroActivo;
+      // Cada endpoint con su propio catch para que un fallo no tumbe la página entera
       const [t, a, u, aj, c, sp, pp] = await Promise.all([
-        getTrabajadores(params),
-        getAfps({ activo: true }),
-        getUnidadesInternas(),
-        getAjustesPlanilla(),
-        getCuentasFinancieras(),
+        getTrabajadores(params).catch(() => ({ data: [] })),
+        getAfps({ activo: true }).catch(() => ({ data: [] })),
+        getUnidadesInternas().catch(() => ({ data: [] })),
+        getAjustesPlanilla().catch(() => ({ data: null })),
+        getCuentasFinancieras().catch(() => ({ data: [] })),
         getServiciosProduccion().catch(() => ({ data: [] })),
         getPersonasProduccionDisponibles().catch(() => ({ data: [] })),
       ]);
@@ -77,12 +107,11 @@ export default function Trabajadores() {
       setAfps(a.data || []);
       setUnidades(u.data || []);
       setAjustes(aj.data);
-      // Cargamos TODAS las cuentas activas (incluyendo ficticias de unidades internas).
-      // El filtro por unidad_interna_id del trabajador se aplica al renderizar el select.
       setCuentas((c.data || []).filter(ct => ct.activo !== false));
       setServiciosProd(sp.data || []);
       setPersonasProd(pp.data || []);
     } catch (e) {
+      console.error('Error cargando trabajadores', e);
       toast.error('Error cargando trabajadores');
     } finally { setLoading(false); }
   }, [empresaActual, filtroArea, filtroActivo]);
@@ -99,6 +128,8 @@ export default function Trabajadores() {
           sueldo_planilla: parseFloat(form.sueldo_planilla) || 0,
           sueldo_basico: parseFloat(form.sueldo_basico) || 0,
           horas_quincenales: parseInt(form.horas_quincenales) || 120,
+          horas_extras_25_default: parseFloat(form.horas_extras_25_default) || 0,
+          horas_extras_35_default: parseFloat(form.horas_extras_35_default) || 0,
           porcentaje_planilla: parseFloat(form.porcentaje_planilla) || 100,
           unidad_interna_id: form.unidad_interna_id ? parseInt(form.unidad_interna_id) : null,
           afp_id: form.afp_id ? parseInt(form.afp_id) : null,
@@ -130,6 +161,8 @@ export default function Trabajadores() {
       sueldo_planilla: t.sueldo_planilla || 0,
       sueldo_basico: t.sueldo_basico || 0,
       horas_quincenales: t.horas_quincenales || 120,
+      horas_extras_25_default: t.horas_extras_25_default || 0,
+      horas_extras_35_default: t.horas_extras_35_default || 0,
       asignacion_familiar: !!t.asignacion_familiar,
       porcentaje_planilla: t.porcentaje_planilla || 100,
       afp_id: t.afp_id ? String(t.afp_id) : '',
@@ -170,6 +203,8 @@ export default function Trabajadores() {
       sueldo_planilla: parseFloat(form.sueldo_planilla) || 0,
       sueldo_basico: parseFloat(form.sueldo_basico) || 0,
       horas_quincenales: parseInt(form.horas_quincenales) || 120,
+      horas_extras_25_default: parseFloat(form.horas_extras_25_default) || 0,
+      horas_extras_35_default: parseFloat(form.horas_extras_35_default) || 0,
       porcentaje_planilla: parseFloat(form.porcentaje_planilla) || 100,
       unidad_interna_id: form.unidad_interna_id ? parseInt(form.unidad_interna_id) : null,
       afp_id: form.afp_id ? parseInt(form.afp_id) : null,
@@ -403,6 +438,37 @@ export default function Trabajadores() {
 
                 <section>
                   <h3 className="text-xs font-semibold uppercase text-muted-foreground mb-2">Sueldo</h3>
+
+                  {/* Calculadora inversa: sueldo objetivo → básico automático */}
+                  <div className="mb-3 p-3 rounded-md border border-blue-200 dark:border-blue-900 bg-blue-50/60 dark:bg-blue-950/30">
+                    <div className="text-[11px] font-semibold text-blue-700 dark:text-blue-400 mb-1.5">
+                      💡 Auto-calcular básico desde sueldo objetivo
+                    </div>
+                    <div className="flex items-end gap-2">
+                      <div className="flex-1">
+                        <label className="text-[10px] text-muted-foreground block mb-0.5">Sueldo total mensual deseado</label>
+                        <input type="number" step="0.01" min="0"
+                          value={sueldoObjetivo}
+                          onChange={e => setSueldoObjetivo(e.target.value)}
+                          onWheel={(e) => e.currentTarget.blur()}
+                          placeholder="Ej: 1500"
+                          className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background font-mono" />
+                      </div>
+                      <button type="button"
+                        onClick={handleAutoCalcularBasico}
+                        disabled={calculandoInversa || !sueldoObjetivo}
+                        className="px-3 py-2 rounded-md bg-blue-600 hover:bg-blue-700 text-white text-xs font-medium disabled:opacity-50 whitespace-nowrap">
+                        {calculandoInversa ? 'Calculando...' : 'Calcular básico'}
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-muted-foreground mt-1.5 leading-snug">
+                      Usa <strong>{form.horas_quincenales || 120}h</strong> quincenales,
+                      <strong> {form.horas_extras_25_default || 0}h</strong> extra 25% y
+                      <strong> {form.horas_extras_35_default || 0}h</strong> extra 35%.
+                      El sistema calculará el básico para que el total mensual sea ~el objetivo.
+                    </p>
+                  </div>
+
                   <div>
                     <label className="text-xs font-medium text-muted-foreground block mb-1">Sueldo básico total (S/)</label>
                     <div className="flex gap-2">
@@ -460,6 +526,7 @@ export default function Trabajadores() {
                         onChange={e => setForm({...form, horas_quincenales: e.target.value})}
                         className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background font-mono"
                         data-testid="form-horas" />
+                      <p className="text-[10px] text-muted-foreground mt-1">Hora simple = sueldo / (horas × 2)</p>
                     </div>
                     <div>
                       <label className="text-xs font-medium text-muted-foreground block mb-1">% Planilla *</label>
@@ -470,6 +537,24 @@ export default function Trabajadores() {
                         <option value={100}>100%</option>
                         <option value={50}>50%</option>
                       </select>
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-muted-foreground block mb-1">H. Extras 25% (default)</label>
+                      <input type="number" min="0" step="0.5"
+                        value={form.horas_extras_25_default}
+                        onChange={e => setForm({...form, horas_extras_25_default: e.target.value})}
+                        onWheel={(e) => e.currentTarget.blur()}
+                        className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background font-mono" />
+                      <p className="text-[10px] text-muted-foreground mt-1">Se pre-carga al armar la planilla quincenal.</p>
+                    </div>
+                    <div>
+                      <label className="text-xs font-medium text-muted-foreground block mb-1">H. Extras 35% (default)</label>
+                      <input type="number" min="0" step="0.5"
+                        value={form.horas_extras_35_default}
+                        onChange={e => setForm({...form, horas_extras_35_default: e.target.value})}
+                        onWheel={(e) => e.currentTarget.blur()}
+                        className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background font-mono" />
+                      <p className="text-[10px] text-muted-foreground mt-1">Editable luego en cada planilla.</p>
                     </div>
                     <div>
                       <label className="text-xs font-medium text-muted-foreground block mb-1">AFP</label>
@@ -692,11 +777,35 @@ export default function Trabajadores() {
                     <div>
                       <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">Horas</div>
                       <div className="bg-card rounded-md border border-border divide-y divide-border">
-                        <Row label="Hora simple" value={fmt(calculos.hora_simple)} hint="sueldo_total / 30 / 8" />
+                        <Row label="Hora simple" value={fmt(calculos.hora_simple)} hint={`sueldo / (horas × 2) = ${sueldoBasicoTotal.toFixed(2)} / ${(parseFloat(form.horas_quincenales || 120) * 2)}`} />
                         <Row label="Hora extra 25%" value={fmt(calculos.hora_extra_25)} hint="hora simple × 1.25" />
                         <Row label="Hora extra 35%" value={fmt(calculos.hora_extra_35)} hint="hora simple × 1.35" />
                       </div>
                     </div>
+                    {/* Sueldo total mensual esperado: básico + (HE × tarifa) × 2 */}
+                    {(() => {
+                      const he25 = parseFloat(form.horas_extras_25_default) || 0;
+                      const he35 = parseFloat(form.horas_extras_35_default) || 0;
+                      if (he25 + he35 === 0) return null;
+                      const aporteHE25 = he25 * (calculos.hora_extra_25 || 0) * 2;
+                      const aporteHE35 = he35 * (calculos.hora_extra_35 || 0) * 2;
+                      const totalEsperado = sueldoBasicoTotal + aporteHE25 + aporteHE35;
+                      return (
+                        <div>
+                          <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">Sueldo total esperado (mensual)</div>
+                          <div className="bg-emerald-50 dark:bg-emerald-950/30 rounded-md border border-emerald-200 dark:border-emerald-900 p-3">
+                            <div className="text-2xl font-bold text-emerald-700 dark:text-emerald-400 font-mono">
+                              S/ {totalEsperado.toFixed(2)}
+                            </div>
+                            <div className="text-[10px] text-muted-foreground mt-1.5 leading-snug">
+                              Sueldo {fmt(sueldoBasicoTotal)}
+                              {he25 > 0 && <> + ({he25}h × {fmt(calculos.hora_extra_25)} × 2 = <strong>{fmt(aporteHE25)}</strong>)</>}
+                              {he35 > 0 && <> + ({he35}h × {fmt(calculos.hora_extra_35)} × 2 = <strong>{fmt(aporteHE35)}</strong>)</>}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
                     <div>
                       <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">Beneficios / Aportes</div>
                       <div className="bg-card rounded-md border border-border divide-y divide-border">

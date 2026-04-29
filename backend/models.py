@@ -570,6 +570,7 @@ class GastoBase(BaseModel):
     centro_costo_id: Optional[int] = None
     linea_negocio_id: Optional[int] = None
     unidad_interna_id: Optional[int] = None
+    impuestos_incluidos: bool = True  # Si True, los importes de líneas YA incluyen IGV
 
 class GastoPagoDetalle(BaseModel):
     cuenta_financiera_id: int
@@ -590,6 +591,7 @@ class Gasto(GastoBase):
     subtotal: float = 0
     igv: float = 0
     total: float = 0
+    es_cif: Optional[bool] = None  # derivado: TRUE si alguna línea tiene categoría CIF
     proveedor_nombre: Optional[str] = None
     moneda_codigo: Optional[str] = None
     moneda_simbolo: Optional[str] = None

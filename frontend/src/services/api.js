@@ -131,6 +131,7 @@ export const getGastos = (params) => api.get('/gastos', { params });
 export const getGasto = (id) => api.get(`/gastos/${id}`);
 export const createGasto = (data) => api.post('/gastos', data);
 export const getNextOtroCorrelativo = (fecha) => api.get('/gastos/next-otro-correlativo', { params: { fecha } });
+export const addPagoToGasto = (gastoId, data) => api.post(`/gastos/${gastoId}/pagos`, data);
 
 // Carga masiva (Excel)
 export const downloadGastoTemplate = () => api.get('/gastos/template-excel', { responseType: 'blob' });
@@ -355,6 +356,7 @@ export const createTrabajador = (data) => api.post('/trabajadores', data);
 export const updateTrabajador = (id, data) => api.put(`/trabajadores/${id}`, data);
 export const deleteTrabajador = (id) => api.delete(`/trabajadores/${id}`);
 export const previewCalculosTrabajador = (data) => api.post('/trabajadores/calculos-preview', data);
+export const calcInversaTrabajador = (data) => api.post('/trabajadores/calc-inversa', data);
 
 // Medios de pago por defecto por trabajador
 export const getMediosPagoTrabajador = (id) => api.get(`/trabajadores/${id}/medios-pago`);

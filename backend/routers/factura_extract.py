@@ -82,7 +82,43 @@ Reglas:
 
 
 def _image_to_base64(image_bytes: bytes, mime: str) -> str:
-    """Convierte bytes de imagen a data URL para OpenAI."""
+    """Convierte bytes de imagen a data URL para OpenAI.
+
+    OpenAI Vision soporta JPEG, PNG, GIF, WebP. NO soporta HEIC/HEIF (iPhone).
+    Si recibimos HEIC o una imagen muy grande, la normalizamos a JPEG y la
+    reescalamos a max 2000px del lado mayor.
+    """
+    needs_convert = (
+        mime in ("image/heic", "image/heif", "image/x-heic", "image/x-heif")
+        or len(image_bytes) > 4 * 1024 * 1024  # > 4MB siempre re-comprime
+    )
+    if needs_convert:
+        try:
+            from PIL import Image
+            from io import BytesIO
+            # Registrar opener HEIC si está disponible
+            try:
+                from pillow_heif import register_heif_opener
+                register_heif_opener()
+            except ImportError:
+                pass
+            img = Image.open(BytesIO(image_bytes))
+            # Convertir a RGB (HEIC suele venir en otros modos)
+            if img.mode not in ("RGB", "L"):
+                img = img.convert("RGB")
+            # Reescalar si el lado mayor > 2000px (no necesitamos más para Vision)
+            max_side = 2000
+            if max(img.size) > max_side:
+                ratio = max_side / max(img.size)
+                new_size = (int(img.width * ratio), int(img.height * ratio))
+                img = img.resize(new_size, Image.LANCZOS)
+            buf = BytesIO()
+            img.save(buf, format="JPEG", quality=85, optimize=True)
+            image_bytes = buf.getvalue()
+            mime = "image/jpeg"
+            logger.info(f"Imagen convertida/reescalada → {len(image_bytes)//1024}KB")
+        except Exception as e:
+            logger.warning(f"No se pudo convertir imagen ({e}), enviando original")
     b64 = base64.b64encode(image_bytes).decode("utf-8")
     return f"data:{mime};base64,{b64}"
 
@@ -133,7 +169,8 @@ async def _extract_with_openai(image_data_url: str, fuente: str = "image", empre
         from openai import OpenAI
     except ImportError:
         raise HTTPException(500, "Librería openai no instalada")
-    client = OpenAI(api_key=api_key)
+    # Timeout amplio porque Vision puede tardar 20-40s con imágenes grandes
+    client = OpenAI(api_key=api_key, timeout=90.0)
     try:
         resp = client.chat.completions.create(
             model=model,
@@ -239,13 +276,31 @@ async def extract_from_image(
     file: UploadFile = File(...),
     empresa_id: int = Depends(get_empresa_id),
 ):
-    """Extrae datos de factura desde imagen (jpg, png, heic, webp)."""
-    if not file.content_type or not file.content_type.startswith("image/"):
-        raise HTTPException(400, "El archivo debe ser una imagen")
+    """Extrae datos de factura desde imagen (jpg, png, heic, webp).
+
+    Si recibimos HEIC (iPhone) o imagen >4MB, se convierte a JPEG y se reescala
+    automáticamente antes de mandar a OpenAI Vision.
+    """
+    fname = (file.filename or "").lower()
+    is_image = (file.content_type or "").startswith("image/") or any(
+        fname.endswith(ext) for ext in (".jpg", ".jpeg", ".png", ".heic", ".heif", ".webp", ".gif")
+    )
+    if not is_image:
+        raise HTTPException(400, "El archivo debe ser una imagen (jpg, png, heic, webp)")
     contents = await file.read()
-    if len(contents) > 10 * 1024 * 1024:
-        raise HTTPException(400, "Imagen demasiado grande (máx 10MB)")
-    data_url = _image_to_base64(contents, file.content_type)
+    if len(contents) > 20 * 1024 * 1024:
+        raise HTTPException(400, "Imagen demasiado grande (máx 20MB)")
+    # Inferir mime correcto desde extensión si content_type viene vacío o genérico
+    mime = file.content_type or "image/jpeg"
+    if fname.endswith((".heic", ".heif")):
+        mime = "image/heic"
+    elif fname.endswith(".jpg") or fname.endswith(".jpeg"):
+        mime = "image/jpeg"
+    elif fname.endswith(".png"):
+        mime = "image/png"
+    elif fname.endswith(".webp"):
+        mime = "image/webp"
+    data_url = _image_to_base64(contents, mime)
     extraccion = await _extract_with_openai(data_url, fuente="image", empresa_id=empresa_id)
     extraccion = await _enriquecer_con_bd(extraccion, empresa_id)
     return {"ok": True, "fuente": "image", "data": extraccion}

@@ -66,6 +66,7 @@ numpy==2.4.1
 oauthlib==3.3.1
 openai==1.99.9
 openpyxl==3.1.5
+pillow-heif==0.18.0
 pymupdf==1.26.5
 packaging==25.0
 pandas==2.3.3

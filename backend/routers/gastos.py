@@ -1,11 +1,13 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
 from typing import List, Optional
 from datetime import date, datetime
+import logging
 from database import get_pool
 from models import Gasto, GastoCreate, Adelanto, AdelantoCreate
 from dependencies import get_empresa_id, safe_date_param, get_next_correlativo
 from routers.pagos import generate_pago_number
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
@@ -82,7 +84,16 @@ async def list_gastos(
         if fecha_hasta:
             conditions.append(f"g.fecha <= ${idx}"); params.append(fecha_hasta); idx += 1
         if es_cif is not None:
-            conditions.append(f"COALESCE(cg.es_cif, false) = ${idx}"); params.append(es_cif); idx += 1
+            # Filtro CIF: deriva del flag es_cif de cont_categoria de las líneas
+            # (un gasto es CIF si CUALQUIER línea tiene categoría marcada como CIF)
+            conditions.append(f"""(
+                EXISTS (
+                    SELECT 1 FROM finanzas2.cont_gasto_linea gl2
+                    JOIN finanzas2.cont_categoria c2 ON gl2.categoria_id = c2.id
+                    WHERE gl2.gasto_id = g.id AND COALESCE(c2.es_cif, false) = TRUE
+                )
+            ) = ${idx}""")
+            params.append(es_cif); idx += 1
         if unidad_interna_id:
             conditions.append(f"g.unidad_interna_id = ${idx}"); params.append(unidad_interna_id); idx += 1
         if linea_negocio_id:
@@ -102,7 +113,14 @@ async def list_gastos(
                    cc.nombre as centro_costo_nombre,
                    ln.nombre as linea_negocio_nombre,
                    ui.nombre as unidad_interna_nombre,
-                   cfp.nombre as cuenta_pago_nombre
+                   cfp.nombre as cuenta_pago_nombre,
+                   -- Flag derivado: el gasto es CIF si alguna línea tiene categoría CIF
+                   (
+                     SELECT COALESCE(BOOL_OR(c2.es_cif), false)
+                       FROM finanzas2.cont_gasto_linea gl3
+                       JOIN finanzas2.cont_categoria c2 ON gl3.categoria_id = c2.id
+                      WHERE gl3.gasto_id = g.id
+                   ) AS es_cif
             FROM finanzas2.cont_gasto g
             LEFT JOIN finanzas2.cont_gasto_linea gl ON g.id = gl.gasto_id
             LEFT JOIN finanzas2.cont_moneda m ON g.moneda_id = m.id
@@ -144,17 +162,39 @@ async def create_gasto(data: GastoCreate, empresa_id: int = Depends(get_empresa_
             # Generate auto-incrementing gasto number
             numero = await generate_gasto_number(conn, empresa_id)
             
+            # ─── Auto-derivar CIF/No-CIF desde la categoría de la primera línea ───
+            # cont_categoria tiene flag es_cif. Si CUALQUIER línea tiene es_cif=true, el gasto es CIF.
+            categoria_ids = [l.categoria_id for l in data.lineas if l.categoria_id]
+            es_cif_calc = False
+            if categoria_ids:
+                es_cif_calc = bool(await conn.fetchval(
+                    "SELECT COALESCE(BOOL_OR(es_cif), false) FROM finanzas2.cont_categoria WHERE id = ANY($1::int[])",
+                    categoria_ids
+                ))
+
             # Calculate totals from line items (authoritative source)
+            # Respeta el flag data.impuestos_incluidos: si True, linea.importe YA incluye IGV.
             isc_val = data.isc or 0.0
+            impuestos_incluidos = bool(getattr(data, 'impuestos_incluidos', True))
             base_gravada = 0.0
             base_no_gravada = 0.0
+            igv = 0.0
             for linea in data.lineas:
                 if linea.igv_aplica:
-                    base_gravada += linea.importe
+                    if impuestos_incluidos:
+                        # importe = base + igv → extraer
+                        base = round(linea.importe / 1.18, 4)
+                        base_gravada += base
+                        igv += round(linea.importe - base, 4)
+                    else:
+                        base_gravada += linea.importe
+                        igv += linea.importe * 0.18
                 else:
                     base_no_gravada += linea.importe
-            igv = round(base_gravada * 0.18, 2)
-            subtotal = base_gravada + base_no_gravada
+            base_gravada = round(base_gravada, 2)
+            base_no_gravada = round(base_no_gravada, 2)
+            igv = round(igv, 2)
+            subtotal = round(base_gravada + base_no_gravada, 2)
             total = round(subtotal + igv + isc_val, 2)
             # Fall back to body values if no lineas provided
             if not data.lineas:
@@ -172,8 +212,12 @@ async def create_gasto(data: GastoCreate, empresa_id: int = Depends(get_empresa_
                 numero_documento_final = await _next_otro_correlativo(conn, empresa_id, data.fecha)
 
             # Resolve header-level dimensions
-            tipo_asignacion = data.tipo_asignacion or 'directo'
-            categoria_gasto_id = data.categoria_gasto_id
+            # tipo_asignacion auto-derivado: si la línea es CIF -> 'comun', sino del request
+            if es_cif_calc:
+                tipo_asignacion = 'comun'
+            else:
+                tipo_asignacion = data.tipo_asignacion or 'directo'
+            categoria_gasto_id = data.categoria_gasto_id  # legacy: ya no se usa pero se preserva
             centro_costo_id_header = data.centro_costo_id
             linea_negocio_id_header = data.linea_negocio_id if tipo_asignacion == 'directo' else None
 
@@ -509,17 +553,36 @@ async def update_gasto(id: int, data: GastoCreate, empresa_id: int = Depends(get
             if existing['pago_id']:
                 raise HTTPException(400, "No se puede editar un gasto pagado")
 
-            # Recalculate totals from lines
+            # ─── Auto-derivar CIF/No-CIF desde la categoría de la primera línea ───
+            categoria_ids = [l.categoria_id for l in data.lineas if l.categoria_id]
+            es_cif_calc = False
+            if categoria_ids:
+                es_cif_calc = bool(await conn.fetchval(
+                    "SELECT COALESCE(BOOL_OR(es_cif), false) FROM finanzas2.cont_categoria WHERE id = ANY($1::int[])",
+                    categoria_ids
+                ))
+
+            # Recalculate totals from lines (respeta impuestos_incluidos)
             isc_val = data.isc or 0.0
+            impuestos_incluidos = bool(getattr(data, 'impuestos_incluidos', True))
             base_gravada = 0.0
             base_no_gravada = 0.0
+            igv = 0.0
             for linea in data.lineas:
                 if linea.igv_aplica:
-                    base_gravada += linea.importe
+                    if impuestos_incluidos:
+                        base = round(linea.importe / 1.18, 4)
+                        base_gravada += base
+                        igv += round(linea.importe - base, 4)
+                    else:
+                        base_gravada += linea.importe
+                        igv += linea.importe * 0.18
                 else:
                     base_no_gravada += linea.importe
-            igv = round(base_gravada * 0.18, 2)
-            subtotal = base_gravada + base_no_gravada
+            base_gravada = round(base_gravada, 2)
+            base_no_gravada = round(base_no_gravada, 2)
+            igv = round(igv, 2)
+            subtotal = round(base_gravada + base_no_gravada, 2)
             total = round(subtotal + igv + isc_val, 2)
             if not data.lineas:
                 base_gravada = data.base_gravada
@@ -529,7 +592,8 @@ async def update_gasto(id: int, data: GastoCreate, empresa_id: int = Depends(get
                 total = round(subtotal + igv + isc_val, 2)
 
             fecha_contable = data.fecha_contable or data.fecha
-            tipo_asignacion = data.tipo_asignacion or 'directo'
+            # Auto: si hay línea CIF -> 'comun', sino 'directo'
+            tipo_asignacion = 'comun' if es_cif_calc else (data.tipo_asignacion or 'directo')
             linea_negocio_id = data.linea_negocio_id if tipo_asignacion == 'directo' else None
 
             await conn.execute("""
@@ -589,6 +653,80 @@ async def update_gasto(id: int, data: GastoCreate, empresa_id: int = Depends(get
             """, id)
             gasto_dict['lineas'] = [dict(l) for l in lineas_rows]
             return gasto_dict
+
+
+@router.post("/gastos/{gasto_id}/pagos")
+async def add_pago_to_gasto(
+    gasto_id: int,
+    data: dict,
+    empresa_id: int = Depends(get_empresa_id),
+):
+    """Agrega un pago a un gasto existente. Body: {cuenta_financiera_id, medio_pago, monto, referencia?}"""
+    pool = await get_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("SET search_path TO finanzas2, public")
+        async with conn.transaction():
+            # Verificar gasto
+            gasto = await conn.fetchrow(
+                "SELECT * FROM finanzas2.cont_gasto WHERE id = $1 AND empresa_id = $2",
+                gasto_id, empresa_id)
+            if not gasto:
+                raise HTTPException(404, "Gasto no encontrado")
+
+            cuenta_id = data.get('cuenta_financiera_id')
+            medio_pago = (data.get('medio_pago') or 'efectivo').lower()
+            monto = float(data.get('monto') or 0)
+            referencia = data.get('referencia') or gasto['numero_documento'] or gasto['numero']
+            if not cuenta_id or monto <= 0:
+                raise HTTPException(400, "Cuenta y monto > 0 son requeridos")
+
+            # Crear cont_pago
+            pago_numero = await generate_pago_number(conn, 'egreso', empresa_id)
+            pago = await conn.fetchrow("""
+                INSERT INTO finanzas2.cont_pago
+                (empresa_id, numero, tipo, fecha, cuenta_financiera_id, moneda_id, monto_total, referencia, notas, centro_costo_id, linea_negocio_id)
+                VALUES ($1, $2, 'egreso', $3, $4, $5, $6, $7, $8, $9, $10)
+                RETURNING id
+            """, empresa_id, pago_numero, gasto['fecha'], cuenta_id,
+                gasto['moneda_id'], monto, referencia, gasto['notas'],
+                gasto['centro_costo_id'], gasto['linea_negocio_id'])
+            pago_id = pago['id']
+
+            # Detalle del pago
+            await conn.execute("""
+                INSERT INTO finanzas2.cont_pago_detalle
+                (empresa_id, pago_id, cuenta_financiera_id, medio_pago, monto)
+                VALUES ($1, $2, $3, $4, $5)
+            """, empresa_id, pago_id, cuenta_id, medio_pago, monto)
+
+            # Aplicación al gasto
+            await conn.execute("""
+                INSERT INTO finanzas2.cont_pago_aplicacion
+                (empresa_id, pago_id, tipo_documento, documento_id, monto_aplicado)
+                VALUES ($1, $2, 'gasto', $3, $4)
+            """, empresa_id, pago_id, gasto_id, monto)
+
+            # Descontar saldo de la cuenta
+            await conn.execute(
+                "UPDATE finanzas2.cont_cuenta_financiera SET saldo_actual = saldo_actual - $1 WHERE id = $2",
+                monto, cuenta_id)
+
+            # Movimiento de tesorería (auditoría)
+            try:
+                from routers.pagos import create_movimiento_tesoreria
+                await create_movimiento_tesoreria(
+                    conn, empresa_id, gasto['fecha'], 'egreso', monto,
+                    cuenta_financiera_id=cuenta_id,
+                    forma_pago=medio_pago,
+                    referencia=referencia,
+                    concepto=f"Gasto {gasto['numero']}",
+                    origen_tipo='gasto_directo',
+                    origen_id=gasto_id,
+                )
+            except Exception as e:
+                logger.warning(f"No se pudo crear movimiento tesorería: {e}")
+
+            return {"ok": True, "pago_id": pago_id, "numero": pago_numero, "monto": monto}
 
 
 @router.delete("/gastos/{gasto_id}/pagos/{pago_id}")

@@ -113,13 +113,18 @@ def calcular_periodo(anio: int, mes: int, quincena: int) -> tuple[date, date]:
     return date(anio, mes, 16), date(anio, mes, last)
 
 
-def calcular_tarifas(sueldo_basico_total: float) -> dict:
-    """Dado el sueldo mensual, devuelve hora_simple, extra_25, extra_35.
+def calcular_tarifas(sueldo_basico_total: float, horas_quincenales: float = 120) -> dict:
+    """Dado el sueldo mensual y las horas quincenales del trabajador, devuelve
+    hora_simple, extra_25, extra_35.
+
+    Fórmula: hora_simple = sueldo_basico_total / (horas_quincenales × 2)
+    Esto permite que cada trabajador tenga su jornada (ej: 120h = 240h mensuales,
+    100h = 200h mensuales, etc.)
+
     IMPORTANTE: NO redondeamos aquí. El redondeo solo se hace al FINAL (neto).
-    El redondeo a 2 decimales es solo visual (helper fmt en UI).
-    Para DB guardamos con 4 decimales de precisión.
     """
-    hs = (sueldo_basico_total / 30 / 8) if sueldo_basico_total > 0 else 0
+    horas_mensuales = (horas_quincenales or 120) * 2
+    hs = (sueldo_basico_total / horas_mensuales) if sueldo_basico_total > 0 and horas_mensuales > 0 else 0
     return {
         "hora_simple": hs,
         "hora_extra_25": hs * 1.25,
@@ -138,7 +143,8 @@ def calcular_linea(det: dict, ajustes: dict, afp: Optional[dict]) -> dict:
     tardanzas = float(det.get('descuento_tardanzas') or 0)
     adelantos = float(det.get('monto_adelantos') or 0)
 
-    t = calcular_tarifas(sbt)
+    horas_quincenales = float(det.get('horas_quincenales') or 120)
+    t = calcular_tarifas(sbt, horas_quincenales)
     # Cálculo sin redondeo intermedio — usamos la precisión completa de floats
     monto_hn_raw = hn * t['hora_simple']
     monto_h25_raw = h25 * t['hora_extra_25']
@@ -246,7 +252,7 @@ async def calcular_preview(data: CalcularInput, empresa_id: int = Depends(get_em
         # Precargar adelantos PENDIENTES (no descontados) de todos los trabajadores
         # — se autoseleccionan en el preview; el usuario puede desmarcar para postergar.
         adelantos_rows = await conn.fetch("""
-            SELECT id, trabajador_id, fecha, monto, motivo, observaciones
+            SELECT id, trabajador_id, fecha, monto, motivo, notas
               FROM finanzas2.fin_adelanto_trabajador
              WHERE empresa_id = $1 AND descontado = FALSE
              ORDER BY fecha ASC, id ASC
@@ -259,7 +265,7 @@ async def calcular_preview(data: CalcularInput, empresa_id: int = Depends(get_em
                 "fecha": str(r['fecha']) if r['fecha'] else None,
                 "monto": float(r['monto'] or 0),
                 "motivo": r['motivo'],
-                "observaciones": r['observaciones'],
+                "observaciones": r['notas'],
             })
 
         lineas = []
@@ -298,9 +304,11 @@ async def calcular_preview(data: CalcularInput, empresa_id: int = Depends(get_em
                 "afp_id": td.get('afp_id'),
                 "afp_nombre": td.get('afp_nombre'),
                 "asignacion_familiar": td.get('asignacion_familiar', False),
+                "horas_quincenales": float(td.get('horas_quincenales') or ajustes_d.get('horas_quincena_default') or 120),
                 "horas_normales": float(horas_default),
-                "horas_extra_25": 0.0,
-                "horas_extra_35": 0.0,
+                # Pre-cargar horas extras 25%/35% por defecto del trabajador (editable en wizard)
+                "horas_extra_25": float(td.get('horas_extras_25_default') or 0),
+                "horas_extra_35": float(td.get('horas_extras_35_default') or 0),
                 "descuento_tardanzas": 0.0,
                 "monto_adelantos": float(monto_adel_auto),
                 # Auto-selección de adelantos pendientes (el usuario puede desmarcar)

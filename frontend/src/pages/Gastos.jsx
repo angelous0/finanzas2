@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Plus, FileText, Trash2, Eye, X, DollarSign, Download, Printer, Pencil, Search, SlidersHorizontal, Upload } from 'lucide-react';
 import ImportExcelModal from '../components/ImportExcelModal';
+import GastoPagosModal from './GastoPagosModal';
 import { toast } from 'sonner';
 import {
   getGastos,
@@ -108,6 +109,10 @@ export default function Gastos() {
 
   // Importar Excel
   const [showImportModal, setShowImportModal] = useState(false);
+
+  // Modal Pagos del Gasto (acceso rápido desde la fila)
+  const [showGastoPagosModal, setShowGastoPagosModal] = useState(false);
+  const [gastoPagosId, setGastoPagosId] = useState(null);
 
   // Quick-create proveedor
   const [showQuickProv, setShowQuickProv] = useState(false);
@@ -422,12 +427,17 @@ export default function Gastos() {
           importe: parseFloat(l.importe),
           igv_aplica: l.igv_aplica
         })),
-        pagos: editingGastoId ? [] : pagos.map(p => ({
-          cuenta_financiera_id: parseInt(p.cuenta_financiera_id),
-          medio_pago: p.medio_pago,
-          monto: parseFloat(p.monto),
-          referencia: p.referencia || null
-        }))
+        // En edit: solo manda pagos si NO hay existentes (caso: usuario eliminó y agregó nuevo)
+        pagos: (editingGastoId && pagosExistentes.length > 0)
+          ? []
+          : pagos
+              .filter(p => p.cuenta_financiera_id && parseFloat(p.monto || 0) > 0)
+              .map(p => ({
+                cuenta_financiera_id: parseInt(p.cuenta_financiera_id),
+                medio_pago: p.medio_pago,
+                monto: parseFloat(p.monto),
+                referencia: p.referencia || null
+              }))
       };
       
       if (editingGastoId) {
@@ -858,7 +868,7 @@ export default function Gastos() {
                         }}>
                           {gasto.tipo_asignacion || 'no_asignado'}
                         </span>
-                        {categoriasGasto.find(c => c.id === gasto.categoria_gasto_id && c.es_cif) && (
+                        {(gasto.es_cif === true || categoriasGasto.find(c => c.id === gasto.categoria_gasto_id && c.es_cif)) && (
                           <span style={{
                             display: 'inline-block',
                             marginLeft: 4,
@@ -886,6 +896,14 @@ export default function Gastos() {
                             title="Ver detalles"
                           >
                             <Eye size={15} />
+                          </button>
+                          <button
+                            className="action-btn"
+                            onClick={() => { setGastoPagosId(gasto.id); setShowGastoPagosModal(true); }}
+                            title="Ver / agregar pagos"
+                            style={{ color: '#16a34a' }}
+                          >
+                            <DollarSign size={15} />
                           </button>
                           <button
                             className="action-btn"
@@ -1262,8 +1280,8 @@ export default function Gastos() {
                     </div>
                   )}
 
-                  {/* New payment rows (create mode only) */}
-                  {!editingGastoId && (
+                  {/* New payment rows (create mode O edit sin pagos) */}
+                  {(!editingGastoId || pagosExistentes.length === 0) && (
                     <>
                       <table className="data-table" style={{ background: 'var(--card-bg)', fontSize: '0.8125rem' }}>
                         <thead>
@@ -1351,29 +1369,34 @@ export default function Gastos() {
                   );
                 })()}
 
-                {/* Categoría de Gasto (CIF / No CIF) — la Unidad Interna ahora va por línea */}
-                <div className="form-group" style={{ marginTop: '0.75rem' }}>
-                  <label className="form-label">Categoría de Gasto (CIF / No CIF)</label>
-                  <select className="form-input" value={formData.categoria_gasto_id || ''}
-                    onChange={(e) => setFormData({ ...formData, categoria_gasto_id: e.target.value ? parseInt(e.target.value) : null })}>
-                    <option value="">— Sin clasificar —</option>
-                    <optgroup label="CIF (costos indirectos de fabricación)">
-                      {categoriasGasto.filter(c => c.es_cif).map(c => (
-                        <option key={c.id} value={c.id}>{c.nombre}</option>
-                      ))}
-                    </optgroup>
-                    <optgroup label="No CIF (administrativo / comercial)">
-                      {categoriasGasto.filter(c => !c.es_cif).map(c => (
-                        <option key={c.id} value={c.id}>{c.nombre}</option>
-                      ))}
-                    </optgroup>
-                  </select>
-                  {categoriasGasto.find(c => c.id === formData.categoria_gasto_id && c.es_cif) && (
-                    <p style={{ fontSize: '11px', color: 'var(--success-text)', marginTop: 4, background: 'var(--success-bg)', padding: '4px 8px', borderRadius: 6, display: 'inline-block' }}>
-                      CIF — se distribuye entre lotes del periodo
-                    </p>
-                  )}
-                </div>
+                {/* Clasificación automática CIF/No-CIF derivada de la categoría de la línea */}
+                {(() => {
+                  // Auto-derivar es_cif desde las líneas (categorias.es_cif)
+                  const lineasConCat = lineasGasto.filter(l => l.categoria_id);
+                  const algunaCif = lineasConCat.some(l => {
+                    const cat = categorias.find(c => String(c.id) === String(l.categoria_id));
+                    return cat?.es_cif === true;
+                  });
+                  if (lineasConCat.length === 0) {
+                    return (
+                      <div style={{ marginTop: '0.75rem', padding: '0.5rem 0.75rem', background: 'var(--card-bg-hover)', border: '1px dashed var(--border)', borderRadius: 6, fontSize: '0.78rem', color: 'var(--muted)' }}>
+                        ℹ️ Selecciona una categoría en alguna línea — se clasificará automáticamente como CIF o No CIF
+                      </div>
+                    );
+                  }
+                  return (
+                    <div style={{ marginTop: '0.75rem', padding: '0.5rem 0.75rem', background: algunaCif ? 'rgba(34,197,94,0.08)' : 'rgba(99,102,241,0.05)', border: `1px solid ${algunaCif ? 'rgba(34,197,94,0.3)' : 'rgba(99,102,241,0.2)'}`, borderRadius: 6, fontSize: '0.82rem', display: 'flex', alignItems: 'center', gap: '0.375rem' }}>
+                      <span style={{ fontWeight: 600, color: algunaCif ? '#15803d' : '#4f46e5' }}>
+                        {algunaCif ? '🏭 CIF' : '🏢 No CIF'}
+                      </span>
+                      <span style={{ color: 'var(--muted)' }}>
+                        {algunaCif
+                          ? '— Costo indirecto de fabricación. Se distribuirá entre los lotes del período.'
+                          : '— Gasto administrativo / comercial.'}
+                      </span>
+                    </div>
+                  );
+                })()}
 
                 {/* Notas */}
                 <div className="form-group" style={{ marginTop: '0.75rem' }}>
@@ -1528,6 +1551,14 @@ export default function Gastos() {
         downloadTemplate={downloadGastoTemplate}
         importFile={importGastosExcel}
         templateFilename="plantilla_gastos.xlsx"
+      />
+
+      {/* Modal: Pagos del Gasto (desde botón 💲 de la fila) */}
+      <GastoPagosModal
+        show={showGastoPagosModal}
+        gastoId={gastoPagosId}
+        onClose={() => { setShowGastoPagosModal(false); setGastoPagosId(null); }}
+        onChanged={loadData}
       />
 
       {showQuickProv && (

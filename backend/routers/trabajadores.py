@@ -32,6 +32,9 @@ class TrabajadorIn(BaseModel):
     sueldo_planilla: float = Field(ge=0, default=0)
     sueldo_basico: float = Field(ge=0, default=0)
     horas_quincenales: int = Field(ge=0, default=120)
+    # Horas extras "esperadas" cada quincena → se pre-cargan al armar la planilla
+    horas_extras_25_default: float = Field(ge=0, default=0)
+    horas_extras_35_default: float = Field(ge=0, default=0)
     asignacion_familiar: bool = False
     porcentaje_planilla: float = Field(default=100.00)
     afp_id: Optional[int] = None
@@ -62,7 +65,11 @@ def _calcular_derivados(row: dict, ajustes: dict, afp: Optional[dict]) -> dict:
     sueldo_minimo = float(ajustes.get('sueldo_minimo') or 0)
     asig_fam_pct = float(ajustes.get('asignacion_familiar_pct') or 0) / 100.0
 
-    hora_simple = sbt / 30 / 8 if sbt > 0 else 0
+    # Fórmula: sueldo_basico_total / (horas_quincenales × 2)
+    # Ej: 1220.34 / (120 × 2) = 1220.34 / 240 = 5.085
+    horas_quincenales = float(row.get('horas_quincenales') or 120)
+    horas_mensuales = horas_quincenales * 2
+    hora_simple = (sbt / horas_mensuales) if (sbt > 0 and horas_mensuales > 0) else 0
     hora_extra_25 = hora_simple * 1.25
     hora_extra_35 = hora_simple * 1.35
     asig_fam_monto = sueldo_minimo * asig_fam_pct if row.get('asignacion_familiar') else 0
@@ -180,14 +187,14 @@ async def get_trabajador(trabajador_id: int, empresa_id: int = Depends(get_empre
 
 @router.post("/trabajadores/calculos-preview")
 async def preview_calculos(data: TrabajadorIn, empresa_id: int = Depends(get_empresa_id)):
-    """Calcula el cuadro de derivados para un trabajador sin guardar en DB.
-    Útil para mostrar el cuadro en tiempo real mientras el usuario llena el form."""
+    """Calcula el cuadro de derivados para un trabajador sin guardar en DB."""
     _validar(data)
     sbt = (data.sueldo_planilla or 0) + (data.sueldo_basico or 0)
     mock_row = {
         'sueldo_basico_total': sbt,
         'sueldo_planilla':     data.sueldo_planilla,
         'asignacion_familiar': data.asignacion_familiar,
+        'horas_quincenales':   data.horas_quincenales,
     }
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -205,6 +212,53 @@ async def preview_calculos(data: TrabajadorIn, empresa_id: int = Depends(get_emp
     return _calcular_derivados(mock_row, ajustes_dict, dict(afp_row) if afp_row else None)
 
 
+# ─── CALCULADORA INVERSA ─────────────────────────────────────────
+# Dado un sueldo objetivo mensual + horas extras esperadas, calcula
+# cuál debería ser el sueldo básico total para que cuadre.
+
+class CalcInversaIn(BaseModel):
+    sueldo_objetivo: float = Field(gt=0)
+    horas_quincenales: int = Field(default=120, gt=0)
+    horas_extras_25: float = Field(default=0, ge=0)
+    horas_extras_35: float = Field(default=0, ge=0)
+
+
+@router.post("/trabajadores/calc-inversa")
+async def calc_inversa(data: CalcInversaIn):
+    """
+    Resuelve: dado el sueldo total que el trabajador debe ganar mensualmente
+    y las horas extras quincenales típicas, ¿cuál es el sueldo básico total?
+
+    Modelo:
+        sueldo_total = básico + (HE25 × tarifa25 × 2) + (HE35 × tarifa35 × 2)
+        tarifa25 = básico / horas_mensuales × 1.25
+        tarifa35 = básico / horas_mensuales × 1.35
+
+        Despejando:
+        básico = sueldo_total / (1 + 2×1.25×HE25/horas_mensuales + 2×1.35×HE35/horas_mensuales)
+    """
+    horas_mensuales = data.horas_quincenales * 2
+    factor = (
+        1
+        + (2 * 1.25 * data.horas_extras_25 / horas_mensuales)
+        + (2 * 1.35 * data.horas_extras_35 / horas_mensuales)
+    )
+    basico = data.sueldo_objetivo / factor
+    hora_simple = basico / horas_mensuales
+    aporte_he25 = data.horas_extras_25 * hora_simple * 1.25 * 2
+    aporte_he35 = data.horas_extras_35 * hora_simple * 1.35 * 2
+    return {
+        "sueldo_basico_total": round(basico, 2),
+        "hora_simple": round(hora_simple, 4),
+        "hora_extra_25": round(hora_simple * 1.25, 4),
+        "hora_extra_35": round(hora_simple * 1.35, 4),
+        "aporte_he25_mensual": round(aporte_he25, 2),
+        "aporte_he35_mensual": round(aporte_he35, 2),
+        "sueldo_total_calculado": round(basico + aporte_he25 + aporte_he35, 2),
+        "horas_mensuales": horas_mensuales,
+    }
+
+
 # ───── CREATE ─────
 
 @router.post("/trabajadores")
@@ -216,14 +270,16 @@ async def create_trabajador(data: TrabajadorIn, empresa_id: int = Depends(get_em
             INSERT INTO finanzas2.fin_trabajador (
                 empresa_id, dni, nombre, area, unidad_interna_id,
                 sueldo_planilla, sueldo_basico, horas_quincenales,
+                horas_extras_25_default, horas_extras_35_default,
                 asignacion_familiar, porcentaje_planilla, afp_id,
                 fecha_ingreso, activo, notas,
                 tipo_pago, prod_persona_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
             RETURNING *
         """, empresa_id, data.dni, data.nombre, data.area.upper(),
              data.unidad_interna_id,
              data.sueldo_planilla, data.sueldo_basico, data.horas_quincenales,
+             data.horas_extras_25_default, data.horas_extras_35_default,
              data.asignacion_familiar, data.porcentaje_planilla, data.afp_id,
              data.fecha_ingreso,
              data.activo if data.activo is not None else True,
@@ -249,16 +305,19 @@ async def update_trabajador(
                 dni = $1, nombre = $2, area = $3,
                 unidad_interna_id = $4,
                 sueldo_planilla = $5, sueldo_basico = $6,
-                horas_quincenales = $7, asignacion_familiar = $8,
-                porcentaje_planilla = $9, afp_id = $10,
-                fecha_ingreso = $11, activo = $12, notas = $13,
-                tipo_pago = $14, prod_persona_id = $15,
+                horas_quincenales = $7,
+                horas_extras_25_default = $8, horas_extras_35_default = $9,
+                asignacion_familiar = $10,
+                porcentaje_planilla = $11, afp_id = $12,
+                fecha_ingreso = $13, activo = $14, notas = $15,
+                tipo_pago = $16, prod_persona_id = $17,
                 updated_at = NOW()
-            WHERE id = $16 AND empresa_id = $17
+            WHERE id = $18 AND empresa_id = $19
             RETURNING *
         """, data.dni, data.nombre, data.area.upper(),
              data.unidad_interna_id,
              data.sueldo_planilla, data.sueldo_basico, data.horas_quincenales,
+             data.horas_extras_25_default, data.horas_extras_35_default,
              data.asignacion_familiar, data.porcentaje_planilla, data.afp_id,
              data.fecha_ingreso,
              data.activo if data.activo is not None else True,

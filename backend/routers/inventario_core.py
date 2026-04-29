@@ -82,9 +82,10 @@ async def articulos_para_oc(search: Optional[str] = None, empresa_id: int = Depe
                     LIMIT 1
                 ) ult_ing ON true
                 WHERE (i.categoria IS DISTINCT FROM 'PT')
+                  AND COALESCE(i.activo, true) = true
                   AND ($1::text IS NULL OR i.nombre ILIKE $1 OR i.codigo ILIKE $1)
                 ORDER BY i.nombre
-                LIMIT 200
+                LIMIT 5000
             """, search_param)
             return [dict(r) for r in rows]
         except Exception as e:
