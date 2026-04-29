@@ -523,11 +523,12 @@ export default function Trabajadores() {
                     <div className="flex gap-2">
                       <input type="number" step="0.01" min="0"
                         value={sueldoBasicoTotal}
-                        readOnly={showSueldoDetalle}
                         onChange={e => {
+                          // Editar el total → todo va a "Sueldo básico" por defecto, planilla en 0.
+                          // Si el usuario después abre el desglose y mete algo en planilla,
+                          // se descontará de básico para mantener este total fijo.
                           const v = parseFloat(e.target.value) || 0;
-                          setForm({...form, sueldo_planilla: v, sueldo_basico: 0});
-                          setShowSueldoDetalle(false);
+                          setForm({...form, sueldo_planilla: 0, sueldo_basico: v});
                         }}
                         className="flex-1 px-3 py-2 text-sm rounded-md border border-border bg-background font-mono"
                         data-testid="form-sueldo-total" />
@@ -537,6 +538,9 @@ export default function Trabajadores() {
                         {showSueldoDetalle ? <><ChevronUp size={14}/> Ocultar desglose</> : <><ChevronDown size={14}/> Desglosar</>}
                       </button>
                     </div>
+                    <p className="text-[10px] text-muted-foreground mt-1">
+                      Por defecto todo va a <strong>Sueldo básico</strong>. Si añadís algo a <strong>Sueldo planilla</strong> (en el desglose), se resta automáticamente del básico para mantener este total fijo.
+                    </p>
                   </div>
                   {showSueldoDetalle && (
                     <div className="grid grid-cols-2 gap-3 mt-3 bg-muted/30 p-3 rounded-md border border-border">
@@ -544,22 +548,34 @@ export default function Trabajadores() {
                         <label className="text-xs font-medium text-muted-foreground block mb-1">Sueldo planilla</label>
                         <input type="number" step="0.01" min="0"
                           value={form.sueldo_planilla}
-                          onChange={e => setForm({...form, sueldo_planilla: e.target.value})}
+                          onChange={e => {
+                            // Auto-ajuste: básico = total fijo - nuevo planilla
+                            const nuevoP = parseFloat(e.target.value) || 0;
+                            const total = sueldoBasicoTotal;
+                            const nuevoB = Math.max(0, +(total - nuevoP).toFixed(2));
+                            setForm({...form, sueldo_planilla: e.target.value, sueldo_basico: nuevoB});
+                          }}
                           className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background font-mono"
                           data-testid="form-sueldo-planilla" />
-                        <p className="text-[10px] text-muted-foreground mt-1">Monto que aparece en boleta (base AFP).</p>
+                        <p className="text-[10px] text-muted-foreground mt-1">Monto que aparece en boleta (base AFP). El básico se ajusta solo.</p>
                       </div>
                       <div>
-                        <label className="text-xs font-medium text-muted-foreground block mb-1">Sueldo básico</label>
+                        <label className="text-xs font-medium text-muted-foreground block mb-1">Sueldo básico (auto)</label>
                         <input type="number" step="0.01" min="0"
                           value={form.sueldo_basico}
-                          onChange={e => setForm({...form, sueldo_basico: e.target.value})}
+                          onChange={e => {
+                            // Si editás básico manualmente, el sistema ajusta planilla
+                            const nuevoB = parseFloat(e.target.value) || 0;
+                            const total = sueldoBasicoTotal;
+                            const nuevoP = Math.max(0, +(total - nuevoB).toFixed(2));
+                            setForm({...form, sueldo_basico: e.target.value, sueldo_planilla: nuevoP});
+                          }}
                           className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background font-mono"
                           data-testid="form-sueldo-basico" />
-                        <p className="text-[10px] text-muted-foreground mt-1">Complemento fuera de planilla.</p>
+                        <p className="text-[10px] text-muted-foreground mt-1">Complemento fuera de planilla. Se ajusta solo cuando cambiás planilla.</p>
                       </div>
                       <div className="col-span-2 text-[11px] text-emerald-700 dark:text-emerald-400 font-medium">
-                        Total = Planilla + Básico = <span className="font-mono">{fmt(sueldoBasicoTotal)}</span>
+                        Total fijo = Planilla + Básico = <span className="font-mono">{fmt(sueldoBasicoTotal)}</span>
                       </div>
                     </div>
                   )}
