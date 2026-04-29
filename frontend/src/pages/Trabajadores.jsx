@@ -332,8 +332,7 @@ export default function Trabajadores() {
               <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">DNI / Nombre</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">Área</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">Unidad</th>
-              <th className="text-right px-4 py-3 text-xs font-medium text-muted-foreground uppercase" title="Sueldo básico total (sin HE)">Sueldo básico</th>
-              <th className="text-right px-4 py-3 text-xs font-medium text-emerald-700 dark:text-emerald-400 uppercase" title="Sueldo total mensual esperado (incluye HE25/HE35 default)">Total mensual</th>
+              <th className="text-right px-4 py-3 text-xs font-medium text-emerald-700 dark:text-emerald-400 uppercase" title="Sueldo total mensual esperado (básico + HE25 default + HE35 default × tarifas × 2)">Sueldo total</th>
               <th className="text-center px-4 py-3 text-xs font-medium text-muted-foreground uppercase">%</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">AFP</th>
               <th className="text-center px-4 py-3 text-xs font-medium text-muted-foreground uppercase">AF</th>
@@ -342,9 +341,9 @@ export default function Trabajadores() {
           </thead>
           <tbody className="divide-y divide-border">
             {loading ? (
-              <tr><td colSpan={9} className="py-10 text-center text-muted-foreground">Cargando…</td></tr>
+              <tr><td colSpan={8} className="py-10 text-center text-muted-foreground">Cargando…</td></tr>
             ) : trabajadores.length === 0 ? (
-              <tr><td colSpan={9} className="py-10 text-center text-muted-foreground">
+              <tr><td colSpan={8} className="py-10 text-center text-muted-foreground">
                 Sin trabajadores. Crea el primero con el botón <strong>Nuevo Trabajador</strong>.
               </td></tr>
             ) : trabajadores.map(t => (
@@ -355,9 +354,8 @@ export default function Trabajadores() {
                 </td>
                 <td className="px-4 py-3 text-xs text-muted-foreground">{t.area}</td>
                 <td className="px-4 py-3 text-xs">{t.unidad_interna_nombre || <span className="text-muted-foreground">—</span>}</td>
-                <td className="px-4 py-3 text-right font-mono text-sm">{fmt(t.sueldo_basico_total)}</td>
-                <td className="px-4 py-3 text-right font-mono text-sm font-semibold text-emerald-700 dark:text-emerald-400" title={t.calculos?.sueldo_total_mensual_esperado ? `Sueldo + HE25 (${t.horas_extras_25_default || 0}h) + HE35 (${t.horas_extras_35_default || 0}h)` : undefined}>
-                  {fmt(t.calculos?.sueldo_total_mensual_esperado || t.sueldo_basico_total)}
+                <td className="px-4 py-3 text-right font-mono text-sm font-semibold text-emerald-700 dark:text-emerald-400" title={`Básico ${fmt(t.sueldo_basico_total)} + HE25 (${t.horas_extras_25_default || 0}h) + HE35 (${t.horas_extras_35_default || 0}h)`}>
+                  {fmt(t.calculos?.sueldo_total_mensual_esperado ?? t.sueldo_basico_total)}
                 </td>
                 <td className="px-4 py-3 text-center text-xs">{t.porcentaje_planilla}%</td>
                 <td className="px-4 py-3 text-xs">{t.afp_nombre || <span className="text-muted-foreground">—</span>}</td>

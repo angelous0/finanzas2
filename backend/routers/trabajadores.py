@@ -79,6 +79,9 @@ def _calcular_derivados(row: dict, ajustes: dict, afp: Optional[dict]) -> dict:
     aporte_he25_mensual = he25_default * hora_extra_25 * 2  # × 2 = quincenal a mensual
     aporte_he35_mensual = he35_default * hora_extra_35 * 2
     sueldo_total_mensual_esperado = sbt + aporte_he25_mensual + aporte_he35_mensual
+    # Snap a entero cuando está muy cerca (evita mostrar 1500.01 por errores de float)
+    if abs(sueldo_total_mensual_esperado - round(sueldo_total_mensual_esperado)) < 0.05:
+        sueldo_total_mensual_esperado = float(round(sueldo_total_mensual_esperado))
     asig_fam_monto = sueldo_minimo * asig_fam_pct if row.get('asignacion_familiar') else 0
 
     base_afp = sueldo_planilla + asig_fam_monto
@@ -183,7 +186,26 @@ async def list_trabajadores(
              WHERE {' AND '.join(conds)}
              ORDER BY t.activo DESC, t.nombre
         """, *params)
-        return [dict(r) for r in rows]
+
+        # Pre-cargar ajustes y AFPs una sola vez para evitar N+1
+        ajustes = await conn.fetchrow(
+            "SELECT * FROM finanzas2.fin_ajustes_planilla WHERE empresa_id = $1",
+            empresa_id)
+        ajustes_dict = dict(ajustes) if ajustes else {
+            'sueldo_minimo': 1130, 'horas_quincena_default': 120, 'asignacion_familiar_pct': 10
+        }
+        afp_rows = await conn.fetch(
+            "SELECT * FROM finanzas2.fin_afp WHERE empresa_id = $1", empresa_id)
+        afps_by_id = {a['id']: dict(a) for a in afp_rows}
+
+        # Enriquecer cada fila con el bloque 'calculos' (incluye sueldo_total_mensual_esperado)
+        result = []
+        for r in rows:
+            d = dict(r)
+            afp_dict = afps_by_id.get(d.get('afp_id')) if d.get('afp_id') else None
+            d['calculos'] = _calcular_derivados(d, ajustes_dict, afp_dict)
+            result.append(d)
+        return result
 
 
 # ───── DETAIL (con cálculos) ─────
