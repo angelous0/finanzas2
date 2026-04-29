@@ -31,6 +31,7 @@ class TrabajadorIn(BaseModel):
     unidad_interna_id: Optional[int] = None
     sueldo_planilla: float = Field(ge=0, default=0)
     sueldo_basico: float = Field(ge=0, default=0)
+    bono: float = Field(ge=0, default=0)  # Monto fijo extra; SOLO suma al total mensual esperado
     horas_quincenales: int = Field(ge=0, default=120)
     # Horas extras "esperadas" cada quincena → se pre-cargan al armar la planilla
     horas_extras_25_default: float = Field(ge=0, default=0)
@@ -78,11 +79,15 @@ def _calcular_derivados(row: dict, ajustes: dict, afp: Optional[dict]) -> dict:
     he35_default = float(row.get('horas_extras_35_default') or 0)
     aporte_he25_mensual = he25_default * hora_extra_25 * 2  # × 2 = quincenal a mensual
     aporte_he35_mensual = he35_default * hora_extra_35 * 2
-    sueldo_total_mensual_esperado = sbt + aporte_he25_mensual + aporte_he35_mensual
+    asig_fam_monto = sueldo_minimo * asig_fam_pct if row.get('asignacion_familiar') else 0
+    bono = float(row.get('bono') or 0)
+    # Total = básico + horas extras + asignación familiar + bono
+    sueldo_total_mensual_esperado = (
+        sbt + aporte_he25_mensual + aporte_he35_mensual + asig_fam_monto + bono
+    )
     # Snap a entero cuando está muy cerca (evita mostrar 1500.01 por errores de float)
     if abs(sueldo_total_mensual_esperado - round(sueldo_total_mensual_esperado)) < 0.05:
         sueldo_total_mensual_esperado = float(round(sueldo_total_mensual_esperado))
-    asig_fam_monto = sueldo_minimo * asig_fam_pct if row.get('asignacion_familiar') else 0
 
     base_afp = sueldo_planilla + asig_fam_monto
     aporte_afp = 0.0
@@ -111,6 +116,7 @@ def _calcular_derivados(row: dict, ajustes: dict, afp: Optional[dict]) -> dict:
         # Sueldo total mensual esperado (con HE defaults aplicados)
         "aporte_he25_mensual":  round(aporte_he25_mensual, 2),
         "aporte_he35_mensual":  round(aporte_he35_mensual, 2),
+        "bono":                 round(bono, 2),
         "sueldo_total_mensual_esperado": round(sueldo_total_mensual_esperado, 2),
         # metadatos para la UI
         "meta": {
@@ -236,6 +242,7 @@ async def preview_calculos(data: TrabajadorIn, empresa_id: int = Depends(get_emp
         'horas_quincenales':   data.horas_quincenales,
         'horas_extras_25_default': data.horas_extras_25_default,
         'horas_extras_35_default': data.horas_extras_35_default,
+        'bono':                data.bono,
     }
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -262,6 +269,9 @@ class CalcInversaIn(BaseModel):
     horas_quincenales: int = Field(default=120, gt=0)
     horas_extras_25: float = Field(default=0, ge=0)
     horas_extras_35: float = Field(default=0, ge=0)
+    # Conceptos que SUMAN al sueldo_objetivo pero NO entran al cálculo del básico
+    bono: float = Field(default=0, ge=0)
+    asignacion_familiar_monto: float = Field(default=0, ge=0)
 
 
 @router.post("/trabajadores/calc-inversa")
@@ -272,14 +282,12 @@ async def calc_inversa(data: CalcInversaIn):
 
     Modelo:
         sueldo_total = básico + (HE25 × tarifa25 × 2) + (HE35 × tarifa35 × 2)
-        tarifa25 = básico / horas_mensuales × 1.25
-        tarifa35 = básico / horas_mensuales × 1.35
+                              + asignación_familiar + bono
 
-        Despejando:
-        básico = sueldo_total / (1 + 2×1.25×HE25/horas_mensuales + 2×1.35×HE35/horas_mensuales)
+        Bono y AF NO afectan tarifas — sólo se restan del objetivo antes de
+        calcular el básico.
 
-    AJUSTE para que dé EXACTO: redondea el básico a 2 decimales y luego ajusta
-    para compensar el redondeo de la tarifa (que también va a 2 decimales en BD).
+        básico = (sueldo_total − bono − AF) / factor_HE
     """
     horas_mensuales = data.horas_quincenales * 2
     factor = (
@@ -287,22 +295,25 @@ async def calc_inversa(data: CalcInversaIn):
         + (2 * 1.25 * data.horas_extras_25 / horas_mensuales)
         + (2 * 1.35 * data.horas_extras_35 / horas_mensuales)
     )
+    extras_fijos = (data.bono or 0) + (data.asignacion_familiar_monto or 0)
+    objetivo_para_basico = max(0.0, data.sueldo_objetivo - extras_fijos)
+
     # Cálculo exacto (sin redondeo intermedio)
-    basico = data.sueldo_objetivo / factor
+    basico = objetivo_para_basico / factor
     hora_simple = basico / horas_mensuales
     he25_tarifa = hora_simple * 1.25
     he35_tarifa = hora_simple * 1.35
     aporte_he25 = data.horas_extras_25 * he25_tarifa * 2
     aporte_he35 = data.horas_extras_35 * he35_tarifa * 2
-    total_calculado = basico + aporte_he25 + aporte_he35
 
     # Si hay HE > 0, ajustar el básico para compensar el redondeo del aporte HE
     # y que el total final sea EXACTAMENTE el objetivo.
     if data.horas_extras_25 > 0 or data.horas_extras_35 > 0:
         aporte_he25_redondeado = round(aporte_he25, 2)
         aporte_he35_redondeado = round(aporte_he35, 2)
-        # básico_ajustado = sueldo_objetivo - aportes redondeados
-        basico_ajustado = data.sueldo_objetivo - aporte_he25_redondeado - aporte_he35_redondeado
+        # básico_ajustado = objetivo - aportes redondeados - extras_fijos
+        basico_ajustado = objetivo_para_basico - aporte_he25_redondeado - aporte_he35_redondeado
+        total_calc = basico_ajustado + aporte_he25_redondeado + aporte_he35_redondeado + extras_fijos
         return {
             "sueldo_basico_total": round(basico_ajustado, 2),
             "hora_simple": round(basico_ajustado / horas_mensuales, 4),
@@ -310,11 +321,14 @@ async def calc_inversa(data: CalcInversaIn):
             "hora_extra_35": round(basico_ajustado / horas_mensuales * 1.35, 4),
             "aporte_he25_mensual": aporte_he25_redondeado,
             "aporte_he35_mensual": aporte_he35_redondeado,
-            "sueldo_total_calculado": round(basico_ajustado + aporte_he25_redondeado + aporte_he35_redondeado, 2),
+            "bono": round(data.bono, 2),
+            "asignacion_familiar_monto": round(data.asignacion_familiar_monto, 2),
+            "sueldo_total_calculado": round(total_calc, 2),
             "horas_mensuales": horas_mensuales,
         }
 
-    # Sin HE: básico = objetivo
+    # Sin HE: básico = objetivo - extras_fijos
+    total_calc = basico + aporte_he25 + aporte_he35 + extras_fijos
     return {
         "sueldo_basico_total": round(basico, 2),
         "hora_simple": round(hora_simple, 4),
@@ -322,7 +336,9 @@ async def calc_inversa(data: CalcInversaIn):
         "hora_extra_35": round(he35_tarifa, 4),
         "aporte_he25_mensual": round(aporte_he25, 2),
         "aporte_he35_mensual": round(aporte_he35, 2),
-        "sueldo_total_calculado": round(total_calculado, 2),
+        "bono": round(data.bono, 2),
+        "asignacion_familiar_monto": round(data.asignacion_familiar_monto, 2),
+        "sueldo_total_calculado": round(total_calc, 2),
         "horas_mensuales": horas_mensuales,
     }
 
@@ -341,8 +357,8 @@ async def create_trabajador(data: TrabajadorIn, empresa_id: int = Depends(get_em
                 horas_extras_25_default, horas_extras_35_default,
                 asignacion_familiar, porcentaje_planilla, afp_id,
                 fecha_ingreso, activo, notas,
-                tipo_pago, prod_persona_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                tipo_pago, prod_persona_id, bono
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
             RETURNING *
         """, empresa_id, data.dni, data.nombre, data.area.upper(),
              data.unidad_interna_id,
@@ -353,7 +369,8 @@ async def create_trabajador(data: TrabajadorIn, empresa_id: int = Depends(get_em
              data.activo if data.activo is not None else True,
              data.notas,
              data.tipo_pago or 'planilla',
-             data.prod_persona_id)
+             data.prod_persona_id,
+             data.bono)
         return await _enrich(conn, row, empresa_id)
 
 
@@ -379,8 +396,9 @@ async def update_trabajador(
                 porcentaje_planilla = $11, afp_id = $12,
                 fecha_ingreso = $13, activo = $14, notas = $15,
                 tipo_pago = $16, prod_persona_id = $17,
+                bono = $18,
                 updated_at = NOW()
-            WHERE id = $18 AND empresa_id = $19
+            WHERE id = $19 AND empresa_id = $20
             RETURNING *
         """, data.dni, data.nombre, data.area.upper(),
              data.unidad_interna_id,
@@ -392,6 +410,7 @@ async def update_trabajador(
              data.notas,
              data.tipo_pago or 'planilla',
              data.prod_persona_id,
+             data.bono,
              trabajador_id, empresa_id)
         if not row:
             raise HTTPException(404, "Trabajador no encontrado")

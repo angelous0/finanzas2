@@ -25,6 +25,7 @@ const emptyForm = {
   dni: '', nombre: '', area: 'ADMINISTRACION',
   unidad_interna_id: '',
   sueldo_planilla: 0, sueldo_basico: 0,
+  bono: 0,
   horas_quincenales: 120,
   horas_extras_25_default: 0,
   horas_extras_35_default: 0,
@@ -63,11 +64,17 @@ export default function Trabajadores() {
     if (!obj || obj <= 0) { toast.error('Ingresa el sueldo objetivo'); return; }
     setCalculandoInversa(true);
     try {
+      // Asignación familiar: si está marcada, usar el monto del preview o calcular como (sueldo_minimo × asig_fam_pct)
+      const asig_fam_monto = form.asignacion_familiar
+        ? (calculos?.asignacion_familiar_monto || (ajustes ? (parseFloat(ajustes.sueldo_minimo) || 0) * (parseFloat(ajustes.asignacion_familiar_pct) || 0) / 100 : 0))
+        : 0;
       const r = await calcInversaTrabajador({
         sueldo_objetivo: obj,
         horas_quincenales: parseInt(form.horas_quincenales) || 120,
         horas_extras_25: parseFloat(form.horas_extras_25_default) || 0,
         horas_extras_35: parseFloat(form.horas_extras_35_default) || 0,
+        bono: parseFloat(form.bono) || 0,
+        asignacion_familiar_monto: asig_fam_monto,
       });
       // Si tiene desglose abierto, lo pone todo en sueldo_basico (complemento) y deja planilla en 0
       setForm(prev => ({
@@ -128,6 +135,7 @@ export default function Trabajadores() {
           ...form,
           sueldo_planilla: parseFloat(form.sueldo_planilla) || 0,
           sueldo_basico: parseFloat(form.sueldo_basico) || 0,
+          bono: parseFloat(form.bono) || 0,
           horas_quincenales: parseInt(form.horas_quincenales) || 120,
           horas_extras_25_default: parseFloat(form.horas_extras_25_default) || 0,
           horas_extras_35_default: parseFloat(form.horas_extras_35_default) || 0,
@@ -161,6 +169,7 @@ export default function Trabajadores() {
       unidad_interna_id: t.unidad_interna_id ? String(t.unidad_interna_id) : '',
       sueldo_planilla: t.sueldo_planilla || 0,
       sueldo_basico: t.sueldo_basico || 0,
+      bono: t.bono || 0,
       horas_quincenales: t.horas_quincenales || 120,
       horas_extras_25_default: t.horas_extras_25_default || 0,
       horas_extras_35_default: t.horas_extras_35_default || 0,
@@ -203,6 +212,7 @@ export default function Trabajadores() {
       dni: form.dni || null,
       sueldo_planilla: parseFloat(form.sueldo_planilla) || 0,
       sueldo_basico: parseFloat(form.sueldo_basico) || 0,
+      bono: parseFloat(form.bono) || 0,
       horas_quincenales: parseInt(form.horas_quincenales) || 120,
       horas_extras_25_default: parseFloat(form.horas_extras_25_default) || 0,
       horas_extras_35_default: parseFloat(form.horas_extras_35_default) || 0,
@@ -579,6 +589,23 @@ export default function Trabajadores() {
                       </div>
                     </div>
                   )}
+
+                  {/* Bono mensual: NO afecta horas extras ni AFP, sólo suma al total mensual esperado */}
+                  <div className="mt-3">
+                    <label className="text-xs font-medium text-muted-foreground block mb-1">
+                      Bono mensual (S/)
+                      <span className="ml-1 text-[10px] font-normal text-muted-foreground/70">— monto fijo extra que se suma al sueldo total esperado</span>
+                    </label>
+                    <input type="number" step="0.01" min="0"
+                      value={form.bono}
+                      onChange={e => setForm({...form, bono: e.target.value})}
+                      className="w-full px-3 py-2 text-sm rounded-md border border-border bg-background font-mono"
+                      placeholder="0.00"
+                      data-testid="form-bono" />
+                    <p className="text-[10px] text-muted-foreground mt-1">
+                      No interviene en hora simple, horas extras, AFP ni en planilla. Sólo se suma al total mensual del trabajador.
+                    </p>
+                  </div>
                 </section>
 
                 <section>
@@ -851,7 +878,10 @@ export default function Trabajadores() {
                     {(() => {
                       const he25 = parseFloat(form.horas_extras_25_default) || 0;
                       const he35 = parseFloat(form.horas_extras_35_default) || 0;
-                      if (he25 + he35 === 0) return null;
+                      const bonoVal = parseFloat(form.bono) || 0;
+                      const afMonto = form.asignacion_familiar ? (calculos.asignacion_familiar_monto || 0) : 0;
+                      // Mostrar el cuadro si hay AL MENOS uno de: HE, Bono, AF
+                      if (he25 + he35 + bonoVal + afMonto === 0) return null;
                       const totalEsperado = calculos.sueldo_total_mensual_esperado || 0;
                       const aporteHE25 = calculos.aporte_he25_mensual || 0;
                       const aporteHE35 = calculos.aporte_he35_mensual || 0;
@@ -868,6 +898,8 @@ export default function Trabajadores() {
                               Sueldo {fmt(sueldoBasicoTotal)}
                               {he25 > 0 && <> + ({he25}h × {fmt(calculos.hora_extra_25)} × 2 = <strong>{fmt(aporteHE25)}</strong>)</>}
                               {he35 > 0 && <> + ({he35}h × {fmt(calculos.hora_extra_35)} × 2 = <strong>{fmt(aporteHE35)}</strong>)</>}
+                              {afMonto > 0 && <> + AF <strong>{fmt(afMonto)}</strong></>}
+                              {bonoVal > 0 && <> + Bono <strong>{fmt(bonoVal)}</strong></>}
                             </div>
                             <div className="text-[10px] text-muted-foreground mt-1 pt-1 border-t border-emerald-200/60 dark:border-emerald-900/60">
                               Quincenal: <strong className="font-mono text-emerald-700 dark:text-emerald-400">S/ {totalQuincenal.toFixed(2)}</strong> (mensual / 2)
