@@ -158,7 +158,22 @@ async def _movimientos_candidatos(conn, empresa_id: int, fecha_desde: date, fech
         cantidad = int(r['cantidad_recibida'] or r['cantidad_enviada'] or 0)
         servicio = (r['servicio_nombre'] or '').strip()
         tarifa_destajo = tarifa_map.get((trab['id'], servicio.lower()))
-        importe = round(cantidad * tarifa_destajo, 2) if tarifa_destajo is not None else None
+        costo_mercado = float(r['costo_mercado'] or 0)
+
+        # Lógica híbrida:
+        #  - Si el trabajador tiene tarifa fija para este servicio → usar tarifa × cantidad (Corte, etc.)
+        #  - Si NO tiene tarifa fija pero el movimiento ya viene con costo_calculado > 0
+        #    (ej. Remalle/Bordado con detalle_costos por sub-operación) → usar el costo del movimiento.
+        usar_costo_movimiento = False
+        if tarifa_destajo is not None:
+            importe = round(cantidad * tarifa_destajo, 2)
+        elif costo_mercado > 0 and cantidad > 0:
+            importe = round(costo_mercado, 2)
+            tarifa_destajo = round(costo_mercado / cantidad, 4)
+            usar_costo_movimiento = True
+        else:
+            importe = None
+
         fecha_mov = r['fecha']
         dentro_rango = bool(fecha_mov) and (fecha_desde <= fecha_mov <= fecha_hasta)
         items.append({
@@ -176,7 +191,8 @@ async def _movimientos_candidatos(conn, empresa_id: int, fecha_desde: date, fech
             "tarifa_mercado": float(r['tarifa_mercado'] or 0),
             "importe": importe,
             "ya_vinculado": r['ya_vinculado_id'] is not None,
-            "sin_tarifa": tarifa_destajo is None,
+            "sin_tarifa": tarifa_destajo is None and importe is None,
+            "usar_costo_movimiento": usar_costo_movimiento,
             "dentro_rango": dentro_rango,
         })
     return items
@@ -445,9 +461,18 @@ async def _persistir_detalles(conn, planilla_id: int, empresa_id: int,
             override = d_in.tarifa_overrides.get(mid)
             if override is None and mv['sin_tarifa']:
                 continue
-            # Componer una copia con la tarifa final + importe recalculado
-            tarifa_final = float(override) if override is not None else mv['tarifa_destajo']
-            importe_final = round((mv['cantidad'] or 0) * tarifa_final, 2)
+            # Componer una copia con la tarifa final + importe recalculado.
+            # Si el movimiento usa "costo del movimiento" (sub-operaciones como Remalle/Bordado)
+            # y NO hay override del usuario → respetar el importe ya calculado del detalle_costos.
+            if override is not None:
+                tarifa_final = float(override)
+                importe_final = round((mv['cantidad'] or 0) * tarifa_final, 2)
+            elif mv.get('usar_costo_movimiento'):
+                tarifa_final = mv['tarifa_destajo']
+                importe_final = mv['importe']  # ya viene del costo_calculado del movimiento
+            else:
+                tarifa_final = mv['tarifa_destajo']
+                importe_final = round((mv['cantidad'] or 0) * tarifa_final, 2)
             movs_validos.append({
                 **mv,
                 'tarifa_destajo': tarifa_final,
