@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { Plus, Pencil, Trash2, X, Users, Calculator, Check, ChevronDown, ChevronUp, CreditCard, Scissors } from 'lucide-react';
+import { Plus, Pencil, Trash2, X, Users, Calculator, Check, ChevronDown, ChevronUp, CreditCard, Scissors, Search } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   getTrabajadores, createTrabajador, updateTrabajador, deleteTrabajador,
@@ -48,6 +48,7 @@ export default function Trabajadores() {
   const [loading, setLoading] = useState(true);
   const [filtroArea, setFiltroArea] = useState('');
   const [filtroActivo, setFiltroActivo] = useState(true);
+  const [busqueda, setBusqueda] = useState('');
 
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -290,6 +291,21 @@ export default function Trabajadores() {
 
   const sueldoBasicoTotal = (parseFloat(form.sueldo_planilla) || 0) + (parseFloat(form.sueldo_basico) || 0);
 
+  // Búsqueda local — quita acentos, ignora mayúsculas y matchea contra varios campos
+  const norm = (s) => (s || '')
+    .toString()
+    .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase().trim();
+  const q = norm(busqueda);
+  const trabajadoresFiltrados = !q ? trabajadores : trabajadores.filter(t => {
+    const haystack = [
+      t.nombre, t.dni, t.area,
+      t.unidad_interna_nombre, t.afp_nombre, t.afp_codigo,
+      t.tipo_pago,
+    ].map(norm).join(' ');
+    return haystack.includes(q);
+  });
+
   return (
     <div className="max-w-[1200px] space-y-6" data-testid="trabajadores-page">
       <div className="flex items-center justify-between">
@@ -309,7 +325,28 @@ export default function Trabajadores() {
       </div>
 
       {/* Filtros */}
-      <div className="flex gap-2 flex-wrap">
+      <div className="flex gap-2 flex-wrap items-center">
+        <div className="relative flex-1 min-w-[260px] max-w-md">
+          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none"/>
+          <input
+            type="text"
+            value={busqueda}
+            onChange={e => setBusqueda(e.target.value)}
+            placeholder="Buscar por nombre, DNI, AFP, unidad…"
+            className="w-full pl-9 pr-9 py-2 text-sm rounded-md border border-border bg-background focus:ring-2 focus:ring-emerald-500/50 focus:border-emerald-500"
+            data-testid="trabajadores-search"
+          />
+          {busqueda && (
+            <button
+              type="button"
+              onClick={() => setBusqueda('')}
+              className="absolute right-2 top-1/2 -translate-y-1/2 h-5 w-5 flex items-center justify-center rounded text-muted-foreground hover:bg-muted"
+              title="Limpiar"
+            >
+              <X size={12}/>
+            </button>
+          )}
+        </div>
         <select value={filtroArea} onChange={e => setFiltroArea(e.target.value)}
           className="px-3 py-2 text-sm rounded-md border border-border bg-background">
           <option value="">Todas las áreas</option>
@@ -322,6 +359,11 @@ export default function Trabajadores() {
           <option value="false">Solo inactivos</option>
           <option value="all">Todos</option>
         </select>
+        {busqueda && (
+          <span className="text-xs text-muted-foreground" title="Resultados que coinciden con la búsqueda">
+            {trabajadoresFiltrados.length} de {trabajadores.length}
+          </span>
+        )}
       </div>
 
       {/* Tabla */}
@@ -346,7 +388,12 @@ export default function Trabajadores() {
               <tr><td colSpan={8} className="py-10 text-center text-muted-foreground">
                 Sin trabajadores. Crea el primero con el botón <strong>Nuevo Trabajador</strong>.
               </td></tr>
-            ) : trabajadores.map(t => (
+            ) : trabajadoresFiltrados.length === 0 ? (
+              <tr><td colSpan={8} className="py-10 text-center text-muted-foreground">
+                No hay coincidencias para <strong>"{busqueda}"</strong>.
+                <button onClick={() => setBusqueda('')} className="ml-2 text-emerald-600 hover:underline">Limpiar búsqueda</button>
+              </td></tr>
+            ) : trabajadoresFiltrados.map(t => (
               <tr key={t.id} className="hover:bg-muted/30" data-testid={`trabajador-row-${t.id}`}>
                 <td className="px-4 py-3">
                   <div className="font-medium text-foreground">{t.nombre}</div>
