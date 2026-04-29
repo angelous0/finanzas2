@@ -332,7 +332,8 @@ export default function Trabajadores() {
               <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">DNI / Nombre</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">Área</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">Unidad</th>
-              <th className="text-right px-4 py-3 text-xs font-medium text-muted-foreground uppercase">Sueldo total</th>
+              <th className="text-right px-4 py-3 text-xs font-medium text-muted-foreground uppercase" title="Sueldo básico total (sin HE)">Sueldo básico</th>
+              <th className="text-right px-4 py-3 text-xs font-medium text-emerald-700 dark:text-emerald-400 uppercase" title="Sueldo total mensual esperado (incluye HE25/HE35 default)">Total mensual</th>
               <th className="text-center px-4 py-3 text-xs font-medium text-muted-foreground uppercase">%</th>
               <th className="text-left px-4 py-3 text-xs font-medium text-muted-foreground uppercase">AFP</th>
               <th className="text-center px-4 py-3 text-xs font-medium text-muted-foreground uppercase">AF</th>
@@ -341,9 +342,9 @@ export default function Trabajadores() {
           </thead>
           <tbody className="divide-y divide-border">
             {loading ? (
-              <tr><td colSpan={8} className="py-10 text-center text-muted-foreground">Cargando…</td></tr>
+              <tr><td colSpan={9} className="py-10 text-center text-muted-foreground">Cargando…</td></tr>
             ) : trabajadores.length === 0 ? (
-              <tr><td colSpan={8} className="py-10 text-center text-muted-foreground">
+              <tr><td colSpan={9} className="py-10 text-center text-muted-foreground">
                 Sin trabajadores. Crea el primero con el botón <strong>Nuevo Trabajador</strong>.
               </td></tr>
             ) : trabajadores.map(t => (
@@ -355,6 +356,9 @@ export default function Trabajadores() {
                 <td className="px-4 py-3 text-xs text-muted-foreground">{t.area}</td>
                 <td className="px-4 py-3 text-xs">{t.unidad_interna_nombre || <span className="text-muted-foreground">—</span>}</td>
                 <td className="px-4 py-3 text-right font-mono text-sm">{fmt(t.sueldo_basico_total)}</td>
+                <td className="px-4 py-3 text-right font-mono text-sm font-semibold text-emerald-700 dark:text-emerald-400" title={t.calculos?.sueldo_total_mensual_esperado ? `Sueldo + HE25 (${t.horas_extras_25_default || 0}h) + HE35 (${t.horas_extras_35_default || 0}h)` : undefined}>
+                  {fmt(t.calculos?.sueldo_total_mensual_esperado || t.sueldo_basico_total)}
+                </td>
                 <td className="px-4 py-3 text-center text-xs">{t.porcentaje_planilla}%</td>
                 <td className="px-4 py-3 text-xs">{t.afp_nombre || <span className="text-muted-foreground">—</span>}</td>
                 <td className="px-4 py-3 text-center">
@@ -782,14 +786,16 @@ export default function Trabajadores() {
                         <Row label="Hora extra 35%" value={fmt(calculos.hora_extra_35)} hint="hora simple × 1.35" />
                       </div>
                     </div>
-                    {/* Sueldo total mensual esperado: básico + (HE × tarifa) × 2 */}
+                    {/* Sueldo total mensual esperado: lo calcula el backend exacto */}
                     {(() => {
                       const he25 = parseFloat(form.horas_extras_25_default) || 0;
                       const he35 = parseFloat(form.horas_extras_35_default) || 0;
                       if (he25 + he35 === 0) return null;
-                      const aporteHE25 = he25 * (calculos.hora_extra_25 || 0) * 2;
-                      const aporteHE35 = he35 * (calculos.hora_extra_35 || 0) * 2;
-                      const totalEsperado = sueldoBasicoTotal + aporteHE25 + aporteHE35;
+                      const totalEsperado = calculos.sueldo_total_mensual_esperado || 0;
+                      const aporteHE25 = calculos.aporte_he25_mensual || 0;
+                      const aporteHE35 = calculos.aporte_he35_mensual || 0;
+                      // Quincenal = total / 2
+                      const totalQuincenal = totalEsperado / 2;
                       return (
                         <div>
                           <div className="text-[11px] uppercase tracking-wider text-muted-foreground mb-1">Sueldo total esperado (mensual)</div>
@@ -801,6 +807,9 @@ export default function Trabajadores() {
                               Sueldo {fmt(sueldoBasicoTotal)}
                               {he25 > 0 && <> + ({he25}h × {fmt(calculos.hora_extra_25)} × 2 = <strong>{fmt(aporteHE25)}</strong>)</>}
                               {he35 > 0 && <> + ({he35}h × {fmt(calculos.hora_extra_35)} × 2 = <strong>{fmt(aporteHE35)}</strong>)</>}
+                            </div>
+                            <div className="text-[10px] text-muted-foreground mt-1 pt-1 border-t border-emerald-200/60 dark:border-emerald-900/60">
+                              Quincenal: <strong className="font-mono text-emerald-700 dark:text-emerald-400">S/ {totalQuincenal.toFixed(2)}</strong> (mensual / 2)
                             </div>
                           </div>
                         </div>

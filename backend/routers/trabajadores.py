@@ -72,6 +72,13 @@ def _calcular_derivados(row: dict, ajustes: dict, afp: Optional[dict]) -> dict:
     hora_simple = (sbt / horas_mensuales) if (sbt > 0 and horas_mensuales > 0) else 0
     hora_extra_25 = hora_simple * 1.25
     hora_extra_35 = hora_simple * 1.35
+
+    # Sueldo total mensual esperado (con HE defaults). Cálculo SIN redondeo intermedio
+    he25_default = float(row.get('horas_extras_25_default') or 0)
+    he35_default = float(row.get('horas_extras_35_default') or 0)
+    aporte_he25_mensual = he25_default * hora_extra_25 * 2  # × 2 = quincenal a mensual
+    aporte_he35_mensual = he35_default * hora_extra_35 * 2
+    sueldo_total_mensual_esperado = sbt + aporte_he25_mensual + aporte_he35_mensual
     asig_fam_monto = sueldo_minimo * asig_fam_pct if row.get('asignacion_familiar') else 0
 
     base_afp = sueldo_planilla + asig_fam_monto
@@ -90,10 +97,18 @@ def _calcular_derivados(row: dict, ajustes: dict, afp: Optional[dict]) -> dict:
         "hora_simple":          round(hora_simple, 2),
         "hora_extra_25":        round(hora_extra_25, 2),
         "hora_extra_35":        round(hora_extra_35, 2),
+        # Versión SIN redondear (4 decimales) para cálculos exactos en frontend
+        "hora_simple_raw":      round(hora_simple, 6),
+        "hora_extra_25_raw":    round(hora_extra_25, 6),
+        "hora_extra_35_raw":    round(hora_extra_35, 6),
         "asignacion_familiar_monto": round(asig_fam_monto, 2),
         "base_afp":             round(base_afp, 2),
         "aporte_afp":           round(aporte_afp, 2),
         "prima_seguros":        round(prima_seguros, 2),
+        # Sueldo total mensual esperado (con HE defaults aplicados)
+        "aporte_he25_mensual":  round(aporte_he25_mensual, 2),
+        "aporte_he35_mensual":  round(aporte_he35_mensual, 2),
+        "sueldo_total_mensual_esperado": round(sueldo_total_mensual_esperado, 2),
         # metadatos para la UI
         "meta": {
             "sueldo_minimo":    sueldo_minimo,
@@ -101,6 +116,8 @@ def _calcular_derivados(row: dict, ajustes: dict, afp: Optional[dict]) -> dict:
             "afp_nombre":       afp.get('nombre') if afp else None,
             "afp_aporte_pct":   float(afp.get('aporte_obligatorio_pct') or 0) if afp else 0,
             "afp_prima_pct":    float(afp.get('prima_seguro_pct') or 0) if afp else 0,
+            "horas_quincenales": horas_quincenales,
+            "horas_mensuales":  horas_mensuales,
         }
     }
 
@@ -195,6 +212,8 @@ async def preview_calculos(data: TrabajadorIn, empresa_id: int = Depends(get_emp
         'sueldo_planilla':     data.sueldo_planilla,
         'asignacion_familiar': data.asignacion_familiar,
         'horas_quincenales':   data.horas_quincenales,
+        'horas_extras_25_default': data.horas_extras_25_default,
+        'horas_extras_35_default': data.horas_extras_35_default,
     }
     pool = await get_pool()
     async with pool.acquire() as conn:
@@ -236,6 +255,9 @@ async def calc_inversa(data: CalcInversaIn):
 
         Despejando:
         básico = sueldo_total / (1 + 2×1.25×HE25/horas_mensuales + 2×1.35×HE35/horas_mensuales)
+
+    AJUSTE para que dé EXACTO: redondea el básico a 2 decimales y luego ajusta
+    para compensar el redondeo de la tarifa (que también va a 2 decimales en BD).
     """
     horas_mensuales = data.horas_quincenales * 2
     factor = (
@@ -243,18 +265,42 @@ async def calc_inversa(data: CalcInversaIn):
         + (2 * 1.25 * data.horas_extras_25 / horas_mensuales)
         + (2 * 1.35 * data.horas_extras_35 / horas_mensuales)
     )
+    # Cálculo exacto (sin redondeo intermedio)
     basico = data.sueldo_objetivo / factor
     hora_simple = basico / horas_mensuales
-    aporte_he25 = data.horas_extras_25 * hora_simple * 1.25 * 2
-    aporte_he35 = data.horas_extras_35 * hora_simple * 1.35 * 2
+    he25_tarifa = hora_simple * 1.25
+    he35_tarifa = hora_simple * 1.35
+    aporte_he25 = data.horas_extras_25 * he25_tarifa * 2
+    aporte_he35 = data.horas_extras_35 * he35_tarifa * 2
+    total_calculado = basico + aporte_he25 + aporte_he35
+
+    # Si hay HE > 0, ajustar el básico para compensar el redondeo del aporte HE
+    # y que el total final sea EXACTAMENTE el objetivo.
+    if data.horas_extras_25 > 0 or data.horas_extras_35 > 0:
+        aporte_he25_redondeado = round(aporte_he25, 2)
+        aporte_he35_redondeado = round(aporte_he35, 2)
+        # básico_ajustado = sueldo_objetivo - aportes redondeados
+        basico_ajustado = data.sueldo_objetivo - aporte_he25_redondeado - aporte_he35_redondeado
+        return {
+            "sueldo_basico_total": round(basico_ajustado, 2),
+            "hora_simple": round(basico_ajustado / horas_mensuales, 4),
+            "hora_extra_25": round(basico_ajustado / horas_mensuales * 1.25, 4),
+            "hora_extra_35": round(basico_ajustado / horas_mensuales * 1.35, 4),
+            "aporte_he25_mensual": aporte_he25_redondeado,
+            "aporte_he35_mensual": aporte_he35_redondeado,
+            "sueldo_total_calculado": round(basico_ajustado + aporte_he25_redondeado + aporte_he35_redondeado, 2),
+            "horas_mensuales": horas_mensuales,
+        }
+
+    # Sin HE: básico = objetivo
     return {
         "sueldo_basico_total": round(basico, 2),
         "hora_simple": round(hora_simple, 4),
-        "hora_extra_25": round(hora_simple * 1.25, 4),
-        "hora_extra_35": round(hora_simple * 1.35, 4),
+        "hora_extra_25": round(he25_tarifa, 4),
+        "hora_extra_35": round(he35_tarifa, 4),
         "aporte_he25_mensual": round(aporte_he25, 2),
         "aporte_he35_mensual": round(aporte_he35, 2),
-        "sueldo_total_calculado": round(basico + aporte_he25 + aporte_he35, 2),
+        "sueldo_total_calculado": round(total_calculado, 2),
         "horas_mensuales": horas_mensuales,
     }
 
